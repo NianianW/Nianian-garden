@@ -2,6 +2,7 @@ export const ENTRY_TYPES = ['care','observation','hypothesis','plan','knowledge'
 export const CARE_TYPES = ['water','mist','fertilize','pest'];
 export const MOISTURE_CONTEXTS = ['daily','before_water','after_water'];
 export const KNOWLEDGE_SECTION_KEYS = ['environment','habits','issues','effectiveCare','hypotheses'];
+export const PLANT_ZONES = ['auto','sill','hanging','shelf'];
 export const KNOWLEDGE_STATUS_KEYS = ['verified','unverified'];
 export const SOURCE_KINDS = ['user_quote','assistant_recap','demo','manual'];
 export const labels = {care:'已完成养护',observation:'观察事实',hypothesis:'待验证的猜想',plan:'待观察问题',knowledge:'专属养护知识',moisture:'土壤湿度',water:'浇水 / 泡水',mist:'喷雾',fertilize:'施肥',pest:'除虫',daily:'日常检查',before_water:'浇水前',after_water:'浇水后'};
@@ -25,6 +26,8 @@ export function validatePlant(p){
     for (const key of ['environment','habits','issues','effectiveCare','hypotheses']) if (p.knowledge[key] != null && (typeof p.knowledge[key] !== 'string' || p.knowledge[key].length > 5000)) throw Error('养护档案内容过长');
   }
   if (p.knowledgeHistory != null && !Array.isArray(p.knowledgeHistory)) throw Error('养护档案修订历史格式不正确');
+  if (p.zone != null && !PLANT_ZONES.includes(p.zone)) throw Error('摆放区域不正确');
+  if (p.portraitDataUrl != null && (typeof p.portraitDataUrl !== 'string' || !/^data:image\/(png|jpeg|webp);base64,/.test(p.portraitDataUrl) || p.portraitDataUrl.length > 4 * 1024 * 1024)) throw Error('插画头像格式不正确或过大');
 }
 export function validateEntry(e,{backup=false}={}){
   if (!e || typeof e !== 'object' || Array.isArray(e)) throw Error('记录不是对象');
