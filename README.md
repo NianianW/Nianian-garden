@@ -41,6 +41,16 @@
 
 **同一网址在 Mac、iPhone 和不同浏览器中的 IndexedDB 互不相通。** iPhone 无法直接读取 Mac 浏览器的数据；需要先在 Mac 导出，再把 JSON 文件传到 iPhone，在 iPhone 上恢复。无云数据库，也无自动同步。浏览器清理网站数据或设备故障会使本地记录丢失，所以要保留备份。照片会增大备份文件。检查提示只在打开网页时显示；无其他服务就无法可靠地在后台准时推送通知。
 
+## 修改代码后重新打包
+
+页面实际加载的是 `app.bundle.js`（单个普通脚本，所以双击 `index.html` 也能用）。修改 `core.js`、`db.js`、`app.js` 或 `example-import.json` 后，运行：
+
+```
+node work/build-file-bundle.mjs
+```
+
+再把 `sw.js` 里的缓存名（`xiaomao-static-vN`）加一，确保已安装到主屏幕的版本会拿到新文件。
+
 ## 数据与版本
 
-IndexedDB 存 `plants`、`entries` 与 `meta`。完整备份格式 `xiaomao-backup` v1；聊天整理稿格式 `xiaomao-chat-import` v1。数据导入前执行格式检查。相同植物、日期、护理动作被视为可能重复；湿度按植物、时间、读数和场景比对；养护知识按栏目、来源日期和原文比对。合并备份时相同 ID 或内容指纹会跳过，替换则用备份覆盖全部本机记录。当前为单人小型 MVP；请不要将含有私人聊天或照片的备份提交到 GitHub。
+IndexedDB 存 `plants`、`entries` 与 `meta`。完整备份格式 `xiaomao-backup` v1；聊天整理稿格式 `xiaomao-chat-import` v1。数据导入前执行格式检查。相同植物、日期、护理动作被视为可能重复；湿度按植物、时间、读数和场景比对；养护知识按栏目、来源日期和原文比对。合并备份时相同 ID 或内容指纹会跳过，替换则用备份覆盖全部本机记录。打开时会向浏览器申请长期保存（`navigator.storage.persist()`），结果显示在资料匣；浏览器不同意时仍可能清理数据。有记录但超过 14 天未下载备份（或从未备份）时，今日巡园顶部会出现「去备份」提示。当前为单人小型 MVP；请不要将含有私人聊天或照片的备份提交到 GitHub。

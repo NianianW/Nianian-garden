@@ -5,9 +5,9 @@ export function openDb(){
   connection=new Promise((resolve,reject)=>{
     const request=indexedDB.open(NAME,VERSION);
     request.onupgradeneeded=()=>{const db=request.result;if(!db.objectStoreNames.contains('plants'))db.createObjectStore('plants',{keyPath:'id'});if(!db.objectStoreNames.contains('entries'))db.createObjectStore('entries',{keyPath:'id'});if(!db.objectStoreNames.contains('meta'))db.createObjectStore('meta',{keyPath:'key'})};
-    request.onsuccess=()=>{const db=request.result;db.onversionchange=()=>db.close();resolve(db)};
-    request.onerror=()=>reject(request.error);
-    request.onblocked=()=>reject(Error('数据库被另一个打开的页面占用'));
+    request.onsuccess=()=>{const db=request.result;db.onversionchange=()=>{db.close();connection=null};db.onclose=()=>{connection=null};resolve(db)};
+    request.onerror=()=>{connection=null;reject(request.error)};
+    request.onblocked=()=>{connection=null;reject(Error('数据库被另一个打开的页面占用，请关闭其他植物园页面后重试'))};
   });return connection;
 }
 function transact(stores,mode,job){return openDb().then(db=>new Promise((resolve,reject)=>{
