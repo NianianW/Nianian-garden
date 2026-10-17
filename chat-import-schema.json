@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/xiaomao/chat-import-v1",
+  "title": "小猫植物园 ChatGPT 聊天整理稿 v1",
+  "description": "由 ChatGPT 整理对话后，交给用户逐条审核再导入。没有原文支持的演示必须标 demo。无精确日期的养护不可记为 care。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "version", "plants", "entries"],
+  "properties": {
+    "format": {"const": "xiaomao-chat-import"},
+    "version": {"const": 1},
+    "plants": {"type": "array", "maxItems": 100, "items": {"type": "object", "required": ["name"], "additionalProperties": false, "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 60}, "species": {"type": "string", "maxLength": 100}, "location": {"type": "string", "maxLength": 100}, "checkEveryDays": {"type": "integer", "minimum": 1, "maximum": 365}, "reminderCareType": {"enum": ["water", "mist", "fertilize", "pest"]}, "moistureEnabled": {"type": "boolean"}}}},
+    "entries": {"type": "array", "maxItems": 1000, "items": {"type": "object", "required": ["plant", "kind", "text", "source"], "additionalProperties": false, "properties": {
+      "plant": {"type": "string", "minLength": 1},
+      "kind": {"enum": ["care", "moisture", "observation", "hypothesis", "plan", "knowledge"]},
+      "care": {"type": ["string", "null"], "enum": ["water", "mist", "fertilize", "pest", null]},
+      "date": {"type": ["string", "null"], "format": "date"},
+      "dateLabel": {"type": ["string", "null"], "maxLength": 80},
+      "observedAt": {"type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$"},
+      "moistureValue": {"type": ["integer", "null"], "minimum": 1, "maximum": 10},
+      "moistureContext": {"type": ["string", "null"], "enum": ["daily", "before_water", "after_water", null]},
+      "knowledgeSection": {"type": ["string", "null"], "enum": ["environment", "habits", "issues", "effectiveCare", "hypotheses", null]},
+      "knowledgeStatus": {"type": ["string", "null"], "enum": ["verified", "unverified", null]},
+      "text": {"type": "string", "minLength": 1, "maxLength": 2000},
+      "source": {"type": "object", "required": ["kind", "quote"], "additionalProperties": false, "properties": {"kind": {"enum": ["user_quote", "assistant_recap", "demo", "manual"]}, "conversation": {"type": "string"}, "quote": {"type": "string"}, "note": {"type": "string"}}}
+    }, "allOf": [{"if": {"properties": {"kind": {"const": "care"}}}, "then": {"required": ["date", "care"], "properties": {"date": {"type": "string", "format": "date"}, "care": {"enum": ["water", "mist", "fertilize", "pest"]}}}}, {"if": {"properties": {"kind": {"const": "moisture"}}}, "then": {"required": ["date", "moistureValue", "moistureContext"]}}, {"if": {"properties": {"kind": {"const": "knowledge"}}}, "then": {"required": ["knowledgeSection", "knowledgeStatus"]}}]}}
+  }
+}

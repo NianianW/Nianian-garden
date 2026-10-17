@@ -1,0 +1,69 @@
+{
+  "format": "xiaomao-chat-import",
+  "version": 1,
+  "plants": [
+    {
+      "name": "演示｜小白鹰",
+      "species": "鹿角蕨",
+      "location": "正对窗户的墙面"
+    }
+  ],
+  "entries": [
+    {
+      "plant": "演示｜小白鹰",
+      "kind": "care",
+      "care": "water",
+      "date": "2026-10-17",
+      "dateLabel": null,
+      "text": "演示记录：今天泡水一次。",
+      "source": {
+        "kind": "demo",
+        "conversation": "植物APP设计",
+        "quote": "假设你跟我说：今天鹿角蕨泡水了，发现它长了一个新的小芽。",
+        "note": "这是功能演示，不是实际发生的养护。"
+      }
+    },
+    {
+      "plant": "演示｜小白鹰",
+      "kind": "observation",
+      "care": null,
+      "date": "2026-10-17",
+      "dateLabel": null,
+      "text": "演示观察：发现一个新的小芽。",
+      "source": {
+        "kind": "demo",
+        "conversation": "植物APP设计",
+        "quote": "假设你跟我说：今天鹿角蕨泡水了，发现它长了一个新的小芽。",
+        "note": "这是功能演示，不是念念已经确认的观察。"
+      }
+    },
+    {
+      "plant": "演示｜小白鹰",
+      "kind": "hypothesis",
+      "care": null,
+      "date": "2026-10-17",
+      "dateLabel": null,
+      "text": "演示猜想：新的胞子叶未来可能朝光源方向生长。",
+      "source": {
+        "kind": "demo",
+        "conversation": "植物APP设计",
+        "quote": "园长的猜想：未来可能会朝光源方向生长。",
+        "note": "猜想与观察分开保存；尚未验证。"
+      }
+    },
+    {
+      "plant": "演示｜小白鹰",
+      "kind": "plan",
+      "care": null,
+      "date": "2026-10-17",
+      "dateLabel": null,
+      "text": "演示计划：以后从相同角度拍照，继续观察新叶的生长方向。",
+      "source": {
+        "kind": "demo",
+        "conversation": "植物APP设计",
+        "quote": "选两张不同日期的照片，左右滑动比较。",
+        "note": "这是未来计划，不代表已经拍摄。"
+      }
+    }
+  ]
+}
