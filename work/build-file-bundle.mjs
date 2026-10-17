@@ -17,6 +17,7 @@ const parts = [
   "'use strict';",
   stripExports(read('core.js')),
   stripExports(read('db.js')),
+  stripExports(read('garden.js')),
   `const EXAMPLE_IMPORT=${example};`,
   stripImports(read('app.js')),
   '})();',
