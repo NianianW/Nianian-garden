@@ -5,6 +5,7 @@ const ENTRY_TYPES = ['care','observation','hypothesis','plan','knowledge','moist
 const CARE_TYPES = ['water','mist','fertilize','pest'];
 const MOISTURE_CONTEXTS = ['daily','before_water','after_water'];
 const KNOWLEDGE_SECTION_KEYS = ['environment','habits','issues','effectiveCare','hypotheses'];
+const PLANT_ZONES = ['auto','sill','hanging','shelf','floor'];
 const KNOWLEDGE_STATUS_KEYS = ['verified','unverified'];
 const SOURCE_KINDS = ['user_quote','assistant_recap','demo','manual'];
 const labels = {care:'已完成养护',observation:'观察事实',hypothesis:'待验证的猜想',plan:'待观察问题',knowledge:'专属养护知识',moisture:'土壤湿度',water:'浇水 / 泡水',mist:'喷雾',fertilize:'施肥',pest:'除虫',daily:'日常检查',before_water:'浇水前',after_water:'浇水后'};
@@ -28,6 +29,8 @@ function validatePlant(p){
     for (const key of ['environment','habits','issues','effectiveCare','hypotheses']) if (p.knowledge[key] != null && (typeof p.knowledge[key] !== 'string' || p.knowledge[key].length > 5000)) throw Error('养护档案内容过长');
   }
   if (p.knowledgeHistory != null && !Array.isArray(p.knowledgeHistory)) throw Error('养护档案修订历史格式不正确');
+  if (p.zone != null && !PLANT_ZONES.includes(p.zone)) throw Error('摆放区域不正确');
+  if (p.portraitDataUrl != null && (typeof p.portraitDataUrl !== 'string' || !/^data:image\/(png|jpeg|webp);base64,/.test(p.portraitDataUrl) || p.portraitDataUrl.length > 4 * 1024 * 1024)) throw Error('插画头像格式不正确或过大');
 }
 function validateEntry(e,{backup=false}={}){
   if (!e || typeof e !== 'object' || Array.isArray(e)) throw Error('记录不是对象');
@@ -136,9 +139,10 @@ const removePlantAndEntries=id=>transact(['plants','entries'],'readwrite',tx=>{t
 const saveMany=(plants,entries)=>transact(['plants','entries'],'readwrite',tx=>{for(const p of plants)tx.objectStore('plants').put(p);for(const e of entries)tx.objectStore('entries').put(e)});
 const replaceAll=(plants,entries,meta=[])=>transact(['plants','entries','meta'],'readwrite',tx=>{tx.objectStore('plants').clear();tx.objectStore('entries').clear();tx.objectStore('meta').clear();for(const p of plants)tx.objectStore('plants').put(p);for(const e of entries)tx.objectStore('entries').put(e);for(const item of meta)tx.objectStore('meta').put(item)});
 
-// garden.js — the window scene, plant portraits and care animations.
-// Illustrated assets (assets/*.webp) were painted with Nano Banana 2.1 and keyed to transparent sprites;
-// motion, timing and composition happen here on a 2D canvas. Works from file:// and offline.
+// garden.js — the castle conservatory plate, plant portraits and care animations.
+// The plates and sprites in assets/ were drawn once with Nano Banana 2.1 during development and
+// shipped as static images; the app itself never calls an image API. A plant can carry its own
+// uploaded illustration (plant.portraitDataUrl), which replaces the default sprite everywhere.
 
 const TAU = Math.PI * 2;
 const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
@@ -158,35 +162,30 @@ function rng(seed) {
   return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 }
 
-// ---------------------------------------------------------------- assets
-const BASE = './assets/';
+// ---------------------------------------------------------------- images
 const cache = new Map();
-function loadImage(name) {
-  if (cache.has(name)) return cache.get(name);
-  const img = new Image();
-  img.decoding = 'async';
+function loadSrc(key, src) {
+  if (cache.has(key)) return cache.get(key);
+  const img = new Image(); img.decoding = 'async';
   const entry = {img, ready: false, promise: null};
-  entry.promise = new Promise(resolve => {
-    img.onload = () => { entry.ready = true; resolve(entry); };
-    img.onerror = () => resolve(entry);
-  });
-  img.src = `${BASE}${name}.webp`;
-  cache.set(name, entry);
-  return entry;
+  entry.promise = new Promise(resolve => { img.onload = () => { entry.ready = true; resolve(entry); }; img.onerror = () => resolve(entry); });
+  img.src = src; cache.set(key, entry); return entry;
 }
+const loadImage = name => loadSrc(name, `./assets/${name}.webp`);
 const ready = name => { const e = loadImage(name); return e.ready ? e.img : null; };
 
-// Sprite facts measured when the assets were keyed (anchor = pot bottom centre, fraction of width).
+// ---------------------------------------------------------------- plants
+// anchor = pot centre as a fraction of the sprite width (measured when the sprites were keyed)
 const SPRITES = {
-  fern: {ax: 0.486, scale: 1.0}, monstera: {ax: 0.499, scale: 1.12}, succulent: {ax: 0.5, scale: 0.6},
-  snake: {ax: 0.509, scale: 1.04}, pothos: {ax: 0.5, scale: 0.86}, spider: {ax: 0.5, scale: 0.9},
-  calathea: {ax: 0.485, scale: 0.95}, sprout: {ax: 0.503, scale: 0.42}
+  palm: {ax: 0.5, scale: 0.8}, staghorn: {ax: 0.5, scale: 0.88},
+  fern: {ax: 0.37, scale: 1.0}, monstera: {ax: 0.41, scale: 1.08}, succulent: {ax: 0.5, scale: 0.68},
+  snake: {ax: 0.5, scale: 1.05}, pothos: {ax: 0.47, scale: 0.92}, spider: {ax: 0.48, scale: 0.95},
+  calathea: {ax: 0.49, scale: 0.95}, sprout: {ax: 0.5, scale: 0.5}
 };
-const STRIPS = {'cat-tail': {frames: 4, ax: 0.456}, 'cat-look': {frames: 4, ax: 0.4835}, butterfly: {frames: 4, ax: 0.5}};
-const TOOLS = {water: 'tool-water', mist: 'tool-mist', fertilize: 'tool-fertilize', pest: 'tool-pest'};
-
 const KINDS = [
-  ['fern', /蕨|鹿角|staghorn|fern|platycerium/i],
+  ['staghorn', /鹿角蕨|鹿角|小白鹰|staghorn|platycerium/i],
+  ['palm', /散尾葵|棕榈|椰子|palm|areca|dypsis/i],
+  ['fern', /蕨|fern/i],
   ['calathea', /竹芋|孔雀|calathea|maranta/i],
   ['monstera', /龟背|蔓绿绒|喜林芋|芋|monstera|philodendron|alocasia/i],
   ['succulent', /多肉|仙人|景天|石莲|玉露|芦荟|生石花|succulent|cact|echeveria|aloe/i],
@@ -195,106 +194,96 @@ const KINDS = [
   ['pothos', /绿萝|萝|常春藤|藤|pothos|ivy|vine/i]
 ];
 const FALLBACK = ['pothos', 'calathea', 'monstera', 'spider', 'fern', 'snake'];
+const ZONES = {auto: '自动安排', sill: '窗台', hanging: '吊挂区', shelf: '植物架', floor: '地面'};
 
 function plantSpec(plant) {
   const seed = hashString(`${plant.id || ''}|${plant.name || ''}|${plant.species || ''}`);
   const r = rng(seed);
   const text = `${plant.species || ''} ${plant.name || ''}`;
   const kind = (KINDS.find(([, re]) => re.test(text)) || [])[0] || FALLBACK[Math.floor(r() * FALLBACK.length)];
-  return {seed, kind, flip: r() > 0.5, size: lerp(0.9, 1.08, r()), hue: Math.round((r() - 0.5) * 22), phase: r() * TAU};
+  const portrait = plant.portraitDataUrl || null;
+  return {seed, kind, portrait, flip: !portrait && r() > 0.5, size: lerp(0.92, 1.06, r()), hue: portrait ? 0 : Math.round((r() - 0.5) * 18), phase: r() * TAU};
 }
-function preloadPlant(plant) { return loadImage(`plant-${plantSpec(plant).kind}`).promise; }
+/** The image that represents a plant: its uploaded portrait, or the default sprite for its kind. */
+function plantImage(spec) {
+  if (spec.portrait) { const e = loadSrc(`portrait:${spec.seed}:${spec.portrait.length}`, spec.portrait); return e.ready ? {img: e.img, ax: 0.5, scale: 1} : null; }
+  const img = ready(`plant-${spec.kind}`); return img ? {img, ...SPRITES[spec.kind]} : null;
+}
+function plantPromise(spec) {
+  return spec.portrait ? loadSrc(`portrait:${spec.seed}:${spec.portrait.length}`, spec.portrait).promise : loadImage(`plant-${spec.kind}`).promise;
+}
+/** Width / height of a plant as drawn (for packing). */
+function plantAspect(spec) {
+  const im = plantImage(spec); if (!im) return 0.85;
+  return im.img.width / im.img.height;
+}
 
-// ---------------------------------------------------------------- drawing helpers
 const filterSupported = (() => { try { const c = document.createElement('canvas').getContext('2d'); c.filter = 'blur(1px)'; return c.filter === 'blur(1px)'; } catch { return false; } })();
 
-/** Draw a plant sprite. (x, y) = bottom centre of the pot, h = drawn height before the species scale. */
-function drawPlantSprite(ctx, spec, x, y, h, st = {}) {
-  const img = ready(`plant-${spec.kind}`); if (!img) return null;
-  const meta = SPRITES[spec.kind];
-  const H = h * meta.scale * spec.size * (st.scale ?? 1);
-  const W = H * img.width / img.height;
-  const sway = st.sway || 0;
-  const droop = clamp(st.droop || 0);
+/** Draw a plant with its pot bottom centred at (x, y), h tall. Returns the drawn box. */
+function drawPlant(ctx, spec, x, y, h, st = {}) {
+  const im = plantImage(spec); if (!im) return null;
+  const H = h * (st.scale ?? 1);
+  const W = H * im.img.width / im.img.height;
   const reveal = st.reveal ?? 1;
   ctx.save();
   ctx.translate(x, y);
-  // contact shadow
-  ctx.fillStyle = `rgba(52,36,20,${0.22 * reveal})`;
-  ctx.beginPath(); ctx.ellipse(W * 0.04, 0, W * 0.38, H * 0.035, 0, 0, TAU); ctx.fill();
+  if (!st.noShadow) { ctx.fillStyle = `rgba(40,26,14,${0.24 * reveal})`; ctx.beginPath(); ctx.ellipse(W * 0.03, 0, W * 0.34, H * 0.03, 0, 0, TAU); ctx.fill(); }
   if (st.glow) {
     const g = ctx.createRadialGradient(0, -H * 0.55, 0, 0, -H * 0.55, H * 0.8);
-    g.addColorStop(0, `rgba(255,236,170,${0.42 * st.glow})`); g.addColorStop(1, 'rgba(255,236,170,0)');
+    g.addColorStop(0, `rgba(255,226,150,${0.45 * st.glow})`); g.addColorStop(1, 'rgba(255,226,150,0)');
     ctx.fillStyle = g; ctx.fillRect(-H, -H * 1.4, H * 2, H * 1.6);
   }
-  // shear from the base: the pot stays put, the leaves move
-  ctx.transform(1, 0, sway, 1 - droop * 0.05, 0, 0);
+  ctx.transform(1, 0, st.sway || 0, 1 - (st.droop || 0) * 0.04, 0, 0);
   if (spec.flip) ctx.scale(-1, 1);
-  if (reveal < 1) { ctx.beginPath(); ctx.rect(-W, -H * reveal - 2, W * 2, H * reveal + 4); ctx.clip(); }
+  if (reveal < 1) { ctx.beginPath(); ctx.rect(-W * 1.2, -H * reveal - 2, W * 2.4, H * reveal + 4); ctx.clip(); }
   if (filterSupported) {
     const f = [];
     if (spec.hue) f.push(`hue-rotate(${spec.hue}deg)`);
-    if (droop) f.push(`saturate(${1 - droop * 0.45})`, `sepia(${droop * 0.25})`);
-    if (st.dim) f.push(`brightness(${1 - st.dim})`);
+    if (st.droop) f.push(`saturate(${1 - st.droop * 0.45})`, `sepia(${st.droop * 0.3})`);
     if (st.tone) f.push(st.tone);
     ctx.filter = f.join(' ') || 'none';
   }
   ctx.globalAlpha = clamp(0.2 + reveal);
-  ctx.drawImage(img, -W * meta.ax, -H, W, H);
+  ctx.drawImage(im.img, -W * im.ax, -H, W, H);
   ctx.restore();
-  return {W, H};
-}
-
-function drawStripFrame(ctx, name, frame, x, y, h, alpha = 1, tone = '') {
-  const img = ready(name); if (!img || alpha <= 0) return;
-  const s = STRIPS[name]; const cw = img.width / s.frames;
-  const W = h * cw / img.height;
-  ctx.save(); ctx.globalAlpha = alpha; ctx.translate(x, y); if (tone) ctx.filter = tone;
-  ctx.drawImage(img, cw * frame, 0, cw, img.height, -W * s.ax, -h, W, h);
-  ctx.restore();
+  return {W, H, ax: im.ax};
 }
 
 function glint(ctx, x, y, s, a) {
-  ctx.save(); ctx.globalAlpha = a; ctx.translate(x, y);
-  ctx.fillStyle = 'rgba(235,248,255,.95)';
+  ctx.save(); ctx.globalAlpha = a; ctx.translate(x, y); ctx.fillStyle = 'rgba(240,250,255,.95)';
   ctx.beginPath();
-  for (let i = 0; i < 4; i++) { const ang = i * Math.PI / 2; ctx.lineTo(Math.cos(ang) * s, Math.sin(ang) * s); ctx.lineTo(Math.cos(ang + Math.PI / 4) * s * 0.22, Math.sin(ang + Math.PI / 4) * s * 0.22); }
+  for (let i = 0; i < 4; i++) { const g = i * Math.PI / 2; ctx.lineTo(Math.cos(g) * s, Math.sin(g) * s); ctx.lineTo(Math.cos(g + Math.PI / 4) * s * 0.22, Math.sin(g + Math.PI / 4) * s * 0.22); }
   ctx.fill(); ctx.restore();
 }
 
-// ---------------------------------------------------------------- care animation (tool + particles)
-/** A care action animation: the tool flies in above the plant, tilts and pours, then leaves. */
+// ---------------------------------------------------------------- care animation
+const TOOLS = {water: 'tool-water', mist: 'tool-mist', fertilize: 'tool-fertilize', pest: 'tool-pest'};
 class CareAction {
   constructor(kind, x, base, h) { this.kind = kind; this.x = x; this.base = base; this.h = h; this.t0 = now(); this.parts = []; this.done = false; this.emitted = 0; }
   get dur() { return 2.6; }
   draw(ctx, t) {
     const k = (t - this.t0) / this.dur; if (k >= 1 && !this.parts.length) { this.done = true; return; }
-    const img = ready(TOOLS[this.kind]);
-    const h = this.h;
+    const img = ready(TOOLS[this.kind]); const h = this.h;
     const inK = easeOut(k / 0.22), outK = easeInOut((k - 0.8) / 0.2);
     const tilt = this.kind === 'water' ? -0.62 * easeInOut((k - 0.18) / 0.2) * (1 - outK) : this.kind === 'fertilize' ? -0.9 * easeInOut((k - 0.18) / 0.2) * (1 - outK) : 0;
-    const toolH = h * (this.kind === 'water' ? 0.34 : this.kind === 'pest' ? 0.3 : 0.32);
-    const tx = this.x + h * (this.kind === 'water' ? 0.42 : this.kind === 'pest' ? 0.05 : 0.36) + (1 - inK) * h * 0.4 + outK * h * 0.5;
-    const ty = this.base - h * (this.kind === 'pest' ? 1.2 : 1.02) - (1 - inK) * h * 0.25 - outK * h * 0.2;
-    const pouring = k > 0.32 && k < 0.8;
+    const toolH = h * (this.kind === 'water' ? 0.36 : this.kind === 'pest' ? 0.32 : 0.34);
+    const tx = this.x + h * (this.kind === 'water' ? 0.44 : this.kind === 'pest' ? 0.05 : 0.36) + (1 - inK) * h * 0.4 + outK * h * 0.5;
+    const ty = this.base - h * (this.kind === 'pest' ? 1.22 : 1.04) - (1 - inK) * h * 0.25 - outK * h * 0.2;
     const W = img ? toolH * img.width / img.height : toolH;
     const rot = tilt + (this.kind === 'mist' ? -0.12 * Math.sin(Math.PI * clamp((k - 0.3) / 0.5)) : 0);
-    const flip = this.kind === 'water' ? -1 : 1; // the can's spout is drawn pointing right; turn it toward the plant
+    const flip = this.kind === 'water' ? -1 : 1;
     if (img && k < 1) {
       ctx.save(); ctx.globalAlpha = clamp(inK) * (1 - outK); ctx.translate(tx, ty); ctx.rotate(rot); ctx.scale(flip, 1);
-      ctx.drawImage(img, -W / 2, -toolH / 2, W, toolH);
-      ctx.restore();
+      ctx.drawImage(img, -W / 2, -toolH / 2, W, toolH); ctx.restore();
     }
-    // working end of each tool, in the tool's local space (before rotation)
-    const tip = {water: [-W * 0.5, -toolH * 0.36], mist: [-W * 0.42, -toolH * 0.36], fertilize: [-W * 0.42, toolH * 0.3], pest: [0, toolH * 0.5]}[this.kind];
+    const tip = {water: [-W * 0.5, -toolH * 0.34], mist: [-W * 0.34, -toolH * 0.3], fertilize: [-W * 0.42, toolH * 0.3], pest: [0, toolH * 0.5]}[this.kind];
     const ex = tx + tip[0] * Math.cos(rot) - tip[1] * Math.sin(rot), ey = ty + tip[0] * Math.sin(rot) + tip[1] * Math.cos(rot);
-    // emit particles from the tool's working end
-    if (pouring) {
+    if (k > 0.32 && k < 0.8) {
       const rate = {water: 60, mist: 40, fertilize: 34, pest: 8}[this.kind];
       const want = Math.floor((k - 0.32) * this.dur * rate);
       while (this.emitted < want) {
-        this.emitted++;
-        const r = Math.random;
+        this.emitted++; const r = Math.random;
         if (this.kind === 'water') this.parts.push({t, x: ex + r() * 3, y: ey, vx: -h * (0.12 + r() * 0.08), vy: h * 0.1, s: h * (0.008 + r() * 0.007)});
         if (this.kind === 'mist') { const a = Math.PI * (0.8 + r() * 0.4); this.parts.push({t, x: ex, y: ey, vx: Math.cos(a) * h * (0.3 + r() * 0.4), vy: Math.sin(a) * h * 0.25 + h * 0.08, s: h * (0.02 + r() * 0.04)}); }
         if (this.kind === 'fertilize') this.parts.push({t, x: ex + r() * 6, y: ey, vx: -h * r() * 0.08, vy: h * 0.05, s: h * (0.006 + r() * 0.006), spin: r() * TAU});
@@ -304,19 +293,17 @@ class CareAction {
     const floor = this.base - h * 0.16;
     for (let i = this.parts.length - 1; i >= 0; i--) {
       const p = this.parts[i]; const age = t - p.t;
-      if (this.kind === 'water' || this.kind === 'pest' || this.kind === 'fertilize') {
-        const g = h * 2.2;
-        const px = p.x + p.vx * age, py = p.y + p.vy * age + 0.5 * g * age * age;
+      if (this.kind !== 'mist') {
+        const g = h * 2.2, px = p.x + p.vx * age, py = p.y + p.vy * age + 0.5 * g * age * age;
         if (py >= floor || p.hit) {
           p.hit = p.hit || t; const rk = (t - p.hit) / 0.5;
           if (rk > 1) { this.parts.splice(i, 1); continue; }
-          if (this.kind === 'fertilize') { ctx.fillStyle = `rgba(240,205,120,${1 - rk})`; ctx.beginPath(); ctx.arc(px, floor, p.s, 0, TAU); ctx.fill(); continue; }
-          ctx.strokeStyle = this.kind === 'pest' ? `rgba(170,215,160,${(1 - rk) * 0.9})` : `rgba(150,205,235,${(1 - rk) * 0.9})`;
-          ctx.lineWidth = 1.2; ctx.beginPath(); ctx.ellipse(px, floor, p.s * (1 + rk * 5), p.s * (0.3 + rk * 1.2), 0, 0, TAU); ctx.stroke();
-          continue;
+          if (this.kind === 'fertilize') { ctx.fillStyle = `rgba(222,190,110,${1 - rk})`; ctx.beginPath(); ctx.arc(px, floor, p.s, 0, TAU); ctx.fill(); continue; }
+          ctx.strokeStyle = this.kind === 'pest' ? `rgba(170,200,140,${(1 - rk) * 0.9})` : `rgba(150,200,230,${(1 - rk) * 0.9})`;
+          ctx.lineWidth = 1.2; ctx.beginPath(); ctx.ellipse(px, floor, p.s * (1 + rk * 5), p.s * (0.3 + rk * 1.2), 0, 0, TAU); ctx.stroke(); continue;
         }
-        if (this.kind === 'fertilize') { ctx.save(); ctx.translate(px, py); ctx.rotate(p.spin + age * 6); ctx.fillStyle = 'rgba(236,198,112,.95)'; ctx.fillRect(-p.s, -p.s, p.s * 2, p.s * 2); ctx.restore(); continue; }
-        ctx.fillStyle = this.kind === 'pest' ? 'rgba(150,110,40,.85)' : 'rgba(140,200,235,.9)';
+        if (this.kind === 'fertilize') { ctx.save(); ctx.translate(px, py); ctx.rotate(p.spin + age * 6); ctx.fillStyle = 'rgba(226,192,112,.95)'; ctx.fillRect(-p.s, -p.s, p.s * 2, p.s * 2); ctx.restore(); continue; }
+        ctx.fillStyle = this.kind === 'pest' ? 'rgba(150,100,40,.85)' : 'rgba(140,196,232,.9)';
         ctx.beginPath(); ctx.moveTo(px, py - p.s * 2.4); ctx.quadraticCurveTo(px + p.s, py, px, py + p.s); ctx.quadraticCurveTo(px - p.s, py, px, py - p.s * 2.4); ctx.fill();
       } else {
         const life = 1.4; if (age > life) { this.parts.splice(i, 1); continue; }
@@ -328,7 +315,7 @@ class CareAction {
     }
     if (this.kind === 'pest' && k > 0.5 && k < 1.1) {
       const q = clamp((k - 0.5) / 0.6);
-      ctx.strokeStyle = `rgba(160,215,170,${(1 - q) * 0.8})`; ctx.lineWidth = 2;
+      ctx.strokeStyle = `rgba(180,210,160,${(1 - q) * 0.8})`; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.ellipse(this.x, this.base - h * 0.45, h * (0.3 + q * 0.35), h * (0.45 + q * 0.4), 0, 0, TAU); ctx.stroke();
     }
     if (this.kind === 'fertilize' && k > 0.6 && k < 1.2) {
@@ -341,16 +328,15 @@ class CareAction {
 // ---------------------------------------------------------------- portrait (cards, journal)
 class PlantPortrait {
   constructor(canvas, plant, state = {}) {
-    this.canvas = canvas; this.plant = plant; this.spec = plantSpec(plant); this.state = state;
-    this.actions = []; this.raf = 0; this.t0 = now(); this.perkAt = -10;
+    this.canvas = canvas; this.spec = plantSpec(plant); this.state = state;
+    this.actions = []; this.raf = 0; this.perkAt = -10;
     this.growFrom = state.animateGrow && !reducedMotion() ? now() : -10;
     this.resize();
-    loadImage(`plant-${this.spec.kind}`).promise.then(() => this.kick());
+    plantPromise(this.spec).then(() => this.kick());
     Object.values(TOOLS).forEach(loadImage);
   }
   resize() {
-    const r = this.canvas.getBoundingClientRect();
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const r = this.canvas.getBoundingClientRect(); const dpr = Math.min(2, window.devicePixelRatio || 1);
     this.w = Math.max(1, r.width); this.h = Math.max(1, r.height); this.dpr = dpr;
     this.canvas.width = Math.round(this.w * dpr); this.canvas.height = Math.round(this.h * dpr);
     this.ctx = this.canvas.getContext('2d');
@@ -358,71 +344,112 @@ class PlantPortrait {
   play(kind) {
     if (kind === 'water') this.state.wet = true;
     this.perkAt = now();
-    if (!reducedMotion()) this.actions.push(new CareAction(kind, this.w / 2, this.h * 0.92, this.h * 0.8));
+    if (!reducedMotion()) this.actions.push(new CareAction(kind, this.w / 2, this.h * (this.state.base ?? 0.92), this.h * 0.78));
     this.kick();
   }
   render(t) {
-    const {ctx, w, h} = this;
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
+    const {ctx, w, h} = this; const base = this.state.base ?? 0.92; const fill = this.state.fill ?? 0.8;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); ctx.clearRect(0, 0, w, h);
+    const im = plantImage(this.spec); if (!im) return;
+    // fit inside the frame: limit by height and by width
+    const aspect = im.img.width / im.img.height;
+    const hh = Math.min(h * fill, (w * 0.86) / aspect);
+    const cx = w / 2 + (im.ax - 0.5) * hh * aspect * (this.spec.flip ? -1 : 1);
     const reveal = easeOut((t - this.growFrom) / 1.2);
     const perk = clamp(1 - (t - this.perkAt) / 1.6);
-    const sway = this.actions.length ? Math.sin((t - this.perkAt) * 7) * 0.04 * perk : 0;
-    const box = drawPlantSprite(ctx, this.spec, w / 2, h * 0.92, h * 0.78, {droop: this.state.droop && !perk ? 0.6 : 0, reveal, sway, scale: 1 + Math.sin(Math.PI * perk) * 0.03, glow: perk * 0.7});
-    if (box && this.state.wet) for (let i = 0; i < 4; i++) {
-      const a = 0.4 + 0.6 * Math.abs(Math.sin(t * 1.4 + i * 1.7 + this.spec.phase));
-      glint(ctx, w / 2 + Math.cos(i * 2.3 + this.spec.phase) * box.W * 0.28, h * 0.92 - box.H * (0.45 + 0.4 * ((i * 0.31) % 1)), Math.max(3, box.H * 0.035), a);
-    }
-    this.actions.forEach(a => a.draw(ctx, t));
-    this.actions = this.actions.filter(a => !a.done);
+    const box = drawPlant(ctx, this.spec, cx, h * base, hh, {droop: this.state.droop && !perk ? 0.6 : 0, reveal, sway: this.actions.length ? Math.sin((t - this.perkAt) * 7) * 0.04 * perk : 0, scale: 1 + Math.sin(Math.PI * perk) * 0.03, glow: perk * 0.7, noShadow: this.state.noShadow});
+    if (box && this.state.wet) for (let i = 0; i < 4; i++) glint(ctx, cx + Math.cos(i * 2.3 + this.spec.phase) * box.W * 0.28, h * base - box.H * (0.45 + 0.4 * ((i * 0.31) % 1)), Math.max(3, box.H * 0.035), 0.4 + 0.6 * Math.abs(Math.sin(t * 1.4 + i * 1.7 + this.spec.phase)));
+    this.actions.forEach(a => a.draw(ctx, t)); this.actions = this.actions.filter(a => !a.done);
   }
   kick() {
     if (this.raf) return;
     const tick = () => {
       this.raf = 0; const t = now(); this.render(t);
-      const busy = this.actions.length || t - this.growFrom < 1.3 || t - this.perkAt < 1.7 || (this.state.wet && !reducedMotion() && this.hovering);
+      const busy = this.actions.length || t - this.growFrom < 1.3 || t - this.perkAt < 1.7;
       if (busy && this.canvas.isConnected) this.raf = requestAnimationFrame(tick);
     };
     this.raf = requestAnimationFrame(tick);
   }
-  hover(on) { this.hovering = on; if (on) this.kick(); }
   destroy() { cancelAnimationFrame(this.raf); this.raf = 0; }
 }
 
-// ---------------------------------------------------------------- time of day
-// Each painted backdrop owns a stretch of the day; neighbours cross-fade.
-const KEYS = [[4.6, 'night'], [6.2, 'dawn'], [8.4, 'dawn'], [10, 'day'], [16, 'day'], [17.8, 'dusk'], [18.7, 'dusk'], [19.8, 'night']];
+// ---------------------------------------------------------------- day / night
+const MODE_KEY = 'xiaomao-scene-mode';
+function getMode() { try { return localStorage.getItem(MODE_KEY) || 'auto'; } catch { return 'auto'; } }
+function setMode(mode) { try { localStorage.setItem(MODE_KEY, mode); } catch { /* private mode: keep it for this visit */ } }
 function currentHour() {
   const q = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('hour') : null;
   if (q != null && q !== '' && !Number.isNaN(Number(q))) return clamp(Number(q), 0, 23.99);
   const d = new Date(); return d.getHours() + d.getMinutes() / 60;
 }
-function skyBlend(hour) {
-  if (hour < KEYS[0][0] || hour >= KEYS.at(-1)[0]) return [['night', 1]];
-  for (let i = 0; i < KEYS.length - 1; i++) {
-    const [h0, a] = KEYS[i], [h1, b] = KEYS[i + 1];
-    if (hour >= h0 && hour < h1) { const k = easeInOut((hour - h0) / (h1 - h0)); return a === b ? [[a, 1]] : [[a, 1 - k], [b, k]]; }
-  }
-  return [['day', 1]];
-}
-function phaseOf(hour) { const b = skyBlend(hour); return b.reduce((m, x) => (x[1] > m[1] ? x : m))[0]; }
-/** CSS filter that makes sprites sit in each painted light. */
-function toneAt(hour) {
-  const T = {day: [1, 1, 0], dawn: [0.9, 0.92, 0.08], dusk: [0.93, 1.02, 0.22], night: [0.62, 0.8, 0.18]};
-  let b = 0, s = 0, w = 0;
-  for (const [name, a] of skyBlend(hour)) { b += T[name][0] * a; s += T[name][1] * a; w += T[name][2] * a; }
-  return `brightness(${b.toFixed(3)}) saturate(${s.toFixed(3)}) sepia(${w.toFixed(3)})`;
+/** 'day' or 'night' for the chosen mode; auto follows the device's local time. */
+function resolvedPhase(mode = getMode()) {
+  if (mode === 'day' || mode === 'night') return mode;
+  const h = currentHour(); return h >= 6 && h < 18.5 ? 'day' : 'night';
 }
 function greeting(hour) {
   if (hour < 5) return '夜深了'; if (hour < 11) return '早上好'; if (hour < 13) return '中午好'; if (hour < 18) return '下午好'; return '晚上好';
 }
 
-// ---------------------------------------------------------------- the window scene
-// Geometry of the painted backdrops, as fractions of the image.
-const LAYOUT = {
-  wide: {sillBack: 0.828, sillFront: 0.872, x0: 0.43, x1: 0.93, catX: 0.3, glass: [0.47, 0.0, 1.0, 0.74], plantH: 0.3},
-  tall: {sillBack: 0.873, sillFront: 0.905, x0: 0.07, x1: 0.73, catX: 0.84, glass: [0.08, 0.34, 0.97, 0.85], plantH: 0.16}
+// ---------------------------------------------------------------- the conservatory plate
+// Geometry of each painted plate, as fractions of the image.
+const PLATES = {
+  wide: {
+    sill: [{x0: 0.3, x1: 0.54, y: 0.75, h: 0.2}],
+    tallSill: [{x0: 0.15, x1: 0.29, y: 0.75, h: 0.28}, {x0: 0.79, x1: 0.89, y: 0.75, h: 0.22}],
+    shelf: [{x0: 0.025, x1: 0.14, y: 0.39, h: 0.12}, {x0: 0.025, x1: 0.14, y: 0.56, h: 0.12}, {x0: 0.845, x1: 0.95, y: 0.7, h: 0.13}],
+    floor: [{x0: 0.25, x1: 0.49, y: 0.91, h: 0.58}],
+    hanging: {rail: 0.145, xs: [[0.17, 0.3], [0.8, 0.9]], drop: 0.04, h: 0.2},
+    cat: {x: 0.915, y: 0.845, h: 0.16}, sleep: {x: 0.915, y: 0.84, h: 0.1},
+    lamps: [[0.925, 0.535, 0.14], [0.03, 0.31, 0.1]], window: [0.39, 0.12, 0.61, 0.72]
+  },
+  tall: {
+    sill: [{x0: 0.26, x1: 0.5, y: 0.75, h: 0.18}],
+    tallSill: [{x0: 0.08, x1: 0.24, y: 0.75, h: 0.24}, {x0: 0.78, x1: 0.92, y: 0.75, h: 0.2}],
+    shelf: [{x0: 0.01, x1: 0.16, y: 0.4, h: 0.1}, {x0: 0.01, x1: 0.16, y: 0.56, h: 0.1}, {x0: 0.84, x1: 0.98, y: 0.7, h: 0.1}],
+    floor: [{x0: 0.08, x1: 0.46, y: 0.92, h: 0.5}],
+    hanging: {rail: 0.145, xs: [[0.08, 0.25], [0.78, 0.91]], drop: 0.035, h: 0.16},
+    cat: {x: 0.28, y: 0.975, h: 0.13}, sleep: {x: 0.27, y: 0.975, h: 0.08},
+    lamps: [[0.04, 0.33, 0.1]], window: [0.46, 0.17, 0.92, 0.72]
+  }
 };
+const TRAILING = new Set(['pothos', 'spider']);
+const SMALL = new Set(['succulent', 'sprout']);
+const TALL = new Set(['palm', 'snake']);
+const MOUNTED = new Set(['staghorn']);
+
+/** Decide each plant's zone: its own choice, otherwise by habit, overflowing to the next zone when full. */
+function assignZones(list, form = 'wide') {
+  const cap = form === 'wide' ? {sill: 4, shelf: 3, hanging: 4, floor: 1} : {sill: 3, shelf: 3, hanging: 2, floor: 1};
+  const count = {sill: 0, shelf: 0, hanging: 0, floor: 0};
+  const out = new Map();
+  for (const p of list) if (p.zone && p.zone !== 'auto') { out.set(p.id, p.zone); count[p.zone]++; }
+  for (const p of list) {
+    if (out.has(p.id)) continue;
+    const kind = plantSpec(p).kind;
+    const pref = MOUNTED.has(kind) ? ['hanging', 'sill', 'shelf'] : TRAILING.has(kind) ? ['hanging', 'shelf', 'sill'] : SMALL.has(kind) ? ['shelf', 'sill', 'hanging'] : ['sill', 'shelf', 'hanging'];
+    const zone = pref.find(z => count[z] < cap[z]) || pref[0];
+    out.set(p.id, zone); count[zone]++;
+  }
+  return out;
+}
+
+/**
+ * Lay plants out inside one segment without overlaps: heights shrink until the summed widths fit.
+ * items: [{spec}] → [{x, y, h}]
+ */
+function packRow(items, x0, x1, y, hMax, ratio) {
+  // x is a fraction of the plate's width, h of its height; ratio = plate height / width converts between them
+  const span = x1 - x0; const n = items.length; if (!n) return [];
+  const aspects = items.map(it => plantAspect(it.spec) * SPRITES_SCALE(it.spec) * ratio);
+  const gap = span * 0.04;
+  const h = Math.min(hMax, (span - gap * (n + 1)) / aspects.reduce((a, b) => a + b, 0));
+  const widths = aspects.map(a => a * h);
+  const free = (span - widths.reduce((a, b) => a + b, 0)) / (n + 1);
+  let x = x0 + free;
+  return items.map((it, i) => { const cx = x + widths[i] / 2; x += widths[i] + free; return {cx, y, h: h * SPRITES_SCALE(it.spec), w: widths[i]}; });
+}
+function SPRITES_SCALE(spec) { return spec.portrait ? 1 : (SPRITES[spec.kind]?.scale ?? 1) * spec.size; }
 
 class GardenScene {
   constructor(canvas, {onPlantClick, onHover, onCat} = {}) {
@@ -430,15 +457,13 @@ class GardenScene {
     this.plants = []; this.actions = []; this.hit = []; this.hover = null;
     this.pointer = {x: -1, y: -1, vx: 0}; this.wind = 0; this.catLook = 0; this.catHappyUntil = 0;
     this.start = now(); this.visible = true; this.raf = 0;
+    this.phase = resolvedPhase(); this.mix = this.phase === 'night' ? 1 : 0; // 0 day … 1 night
     const r = rng(1017);
-    this.flies = Array.from({length: 16}, () => [r(), r(), r() * TAU, r() * 0.6 + 0.5]);
-    this.butterflies = Array.from({length: 2}, (_, i) => ({ph: r() * TAU, sp: 0.18 + r() * 0.1, cx: 0.3 + i * 0.4, cy: 0.35 + r() * 0.3}));
-    ['cat-tail', 'cat-look', 'cat-sleep', 'butterfly', 'plant-sprout', ...Object.values(TOOLS)].forEach(loadImage);
+    this.motes = Array.from({length: 26}, () => [r(), r(), r() * TAU, r() * 0.6 + 0.4]);
+    ['cat-tail', 'cat-look', 'cat-sleep', 'plant-sprout', ...Object.values(TOOLS)].forEach(n => loadImage(n).promise.then(() => this.loop()));
     this.resize();
-    this.ro = new ResizeObserver(() => { this.resize(); this.draw(); });
-    this.ro.observe(canvas);
-    this.io = new IntersectionObserver(([e]) => { this.visible = e.isIntersecting; if (this.visible) this.loop(); });
-    this.io.observe(canvas);
+    this.ro = new ResizeObserver(() => { this.resize(); this.loop(); }); this.ro.observe(canvas);
+    this.io = new IntersectionObserver(([e]) => { this.visible = e.isIntersecting; if (this.visible) this.loop(); }); this.io.observe(canvas);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) this.loop(); });
     canvas.addEventListener('pointermove', e => this.move(e));
     canvas.addEventListener('pointerleave', () => { this.pointer.x = -1; this.setHover(null); });
@@ -450,18 +475,24 @@ class GardenScene {
     this.loop();
   }
   resize() {
-    const r = this.canvas.getBoundingClientRect();
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const r = this.canvas.getBoundingClientRect(); const dpr = Math.min(2, window.devicePixelRatio || 1);
     this.w = Math.max(1, r.width); this.h = Math.max(1, r.height); this.dpr = dpr;
     this.canvas.width = Math.round(this.w * dpr); this.canvas.height = Math.round(this.h * dpr);
     this.ctx = this.canvas.getContext('2d');
-    this.form = this.w / this.h < 0.95 ? 'tall' : 'wide';
+    this.form = this.w / this.h < 1.1 ? 'tall' : 'wide';
+  }
+  setPhase(phase) {
+    if (phase === this.phase) return;
+    this.phase = phase; this.fadeFrom = this.mix; this.fadeAt = now();
+    if (reducedMotion()) { this.mix = phase === 'night' ? 1 : 0; this.fadeAt = null; }
+    this.loop();
   }
   setPlants(list) {
+    // list: [{id, plant, droop, wet}]
     const known = new Map(this.plants.map(p => [p.id, p]));
-    this.plants = list.slice(0, 10).map((p, i) => ({...known.get(p.id), ...p, spec: plantSpec(p.plant), born: known.get(p.id)?.born ?? (now() + 0.5 + i * 0.16)}));
+    this.plants = list.map((p, i) => ({...known.get(p.id), ...p, spec: plantSpec(p.plant), born: known.get(p.id)?.born ?? (now() + 0.5 + i * 0.14)}));
     if (reducedMotion()) this.plants.forEach(p => { p.born = -10; });
-    this.plants.forEach(p => loadImage(`plant-${p.spec.kind}`).promise.then(() => this.loop()));
+    this.plants.forEach(p => plantPromise(p.spec).then(() => this.loop()));
     this.loop();
   }
   move(e) {
@@ -470,185 +501,186 @@ class GardenScene {
     if (this.pointer.x >= 0) this.pointer.vx = x - this.pointer.x;
     this.pointer.x = x; this.pointer.y = y;
     const hits = this.hit.filter(h => x > h.x0 && x < h.x1 && y > h.y0 && y < h.y1);
-    const hit = hits.find(h => h.cat) || hits.find(h => !h.back && y > h.y0 + (h.y1 - h.y0) * 0.3) || hits.sort((a, b) => Math.abs(a.cx - x) - Math.abs(b.cx - x))[0] || null;
-    this.setHover(hit);
-    this.loop();
+    const hit = hits.find(h => h.cat) || hits.sort((a, b) => Math.abs(a.cx - x) - Math.abs(b.cx - x))[0] || null;
+    this.setHover(hit); this.loop();
   }
   setHover(hit) {
     const same = (hit?.id || hit?.cat || null) === (this.hover?.id || this.hover?.cat || null);
-    this.hover = hit;
-    if (same) return;
+    this.hover = hit; if (same) return;
     this.canvas.style.cursor = hit ? 'pointer' : 'default';
     this.onHover?.(hit);
   }
   play(id, kind) {
-    const h = this.hit.find(x => x.id === id);
-    const p = this.plants.find(x => x.id === id);
+    const h = this.hit.find(x => x.id === id); const p = this.plants.find(x => x.id === id);
     if (p) { if (kind === 'water') p.wet = true; p.droop = false; p.perkAt = now(); }
     if (h && !reducedMotion()) this.actions.push(new CareAction(kind, h.cx, h.base, h.ph));
     this.loop();
   }
-  // where the backdrop sits on the canvas (object-fit: cover, anchored low and right)
   frame() {
-    const img = ready(`bg-day-${this.form}`) || ready(`bg-${this.phase || 'day'}-${this.form}`);
-    const iw = img?.width || (this.form === 'wide' ? 1920 : 1080), ih = img?.height || (this.form === 'wide' ? 1072 : 1920);
-    if (this.form === 'tall') {
-      const top = clamp(this.h * 0.14, 60, 150);
-      const s = Math.max(this.w / iw, (this.h - top) / ih);
-      return {s, x: (this.w - iw * s) * 0.5, y: this.h - ih * s, iw, ih, pad: true};
-    }
-    const s = Math.max(this.w / iw, this.h / ih);
-    return {s, x: (this.w - iw * s) * 0.62, y: (this.h - ih * s) * 0.78, iw, ih};
+    // the plate is shown whole (contain), centred
+    const img = ready(`scene-day-${this.form}`) || ready(`scene-night-${this.form}`);
+    const iw = img?.width || (this.form === 'wide' ? 2000 : 1300), ih = img?.height || (this.form === 'wide' ? 1085 : 1637);
+    const s = Math.min(this.w / iw, this.h / ih);
+    return {s, x: (this.w - iw * s) / 2, y: (this.h - ih * s) / 2, iw, ih, W: iw * s, H: ih * s};
   }
-  drawBackdrop(t) {
+  drawPlate(t) {
     const {ctx} = this;
-    const hour = currentHour();
-    const blend = skyBlend(hour);
-    this.phase = phaseOf(hour);
-    const F = this.frame();
-    let drew = false;
-    for (const [name, a] of blend) {
-      const img = ready(`bg-${name}-${this.form}`);
-      if (!img) { loadImage(`bg-${name}-${this.form}`).promise.then(() => this.loop()); continue; }
-      ctx.globalAlpha = drew ? a : 1;
-      if (F.pad && F.y > 0) ctx.drawImage(img, 0, 0, img.width, img.height * 0.03, F.x, 0, F.iw * F.s, F.y + 2); // stretch the plaster upward
-      ctx.drawImage(img, F.x, F.y, F.iw * F.s, F.ih * F.s); drew = true;
+    if (this.fadeAt != null) {
+      const k = easeInOut((t - this.fadeAt) / 1.4); const target = this.phase === 'night' ? 1 : 0;
+      this.mix = lerp(this.fadeFrom, target, k); if (k >= 1) this.fadeAt = null;
     }
-    ctx.globalAlpha = 1;
-    if (!drew) { ctx.fillStyle = '#dfe6dd'; ctx.fillRect(0, 0, this.w, this.h); }
+    const F = this.frame();
+    const day = ready(`scene-day-${this.form}`), night = ready(`scene-night-${this.form}`);
+    [`scene-day-${this.form}`, `scene-night-${this.form}`].forEach(n => { if (!ready(n)) loadImage(n).promise.then(() => this.loop()); });
+    if (day && this.mix < 1) ctx.drawImage(day, F.x, F.y, F.W, F.H);
+    if (night && this.mix > 0) { ctx.globalAlpha = day ? this.mix : 1; ctx.drawImage(night, F.x, F.y, F.W, F.H); ctx.globalAlpha = 1; }
     return F;
   }
-  drawLife(t, F) {
-    const {ctx} = this; const L = LAYOUT[this.form];
-    const gx0 = F.x + L.glass[0] * F.iw * F.s, gy0 = F.y + L.glass[1] * F.ih * F.s, gx1 = F.x + L.glass[2] * F.iw * F.s, gy1 = F.y + L.glass[3] * F.ih * F.s;
-    ctx.save(); ctx.beginPath(); ctx.rect(gx0, gy0, gx1 - gx0, gy1 - gy0); ctx.clip();
-    if (this.phase === 'day' || this.phase === 'dawn') {
-      const bh = clamp((gy1 - gy0) * 0.09, 14, 40);
-      this.butterflies.forEach((b, i) => {
-        const u = t * b.sp + b.ph;
-        const x = gx0 + (gx1 - gx0) * (0.5 + 0.42 * Math.sin(u) * Math.cos(u * 0.37 + i));
-        const y = gy0 + (gy1 - gy0) * (b.cy + 0.18 * Math.sin(u * 1.9) + 0.05 * Math.sin(t * 6 + i));
-        const frame = Math.floor(t * 11 + i * 2) % 4;
-        const dx = Math.cos(u) * Math.cos(u * 0.37 + i);
-        ctx.save(); ctx.translate(x, y); ctx.rotate(dx > 0 ? 0.35 : -0.35);
-        drawStripFrame(ctx, 'butterfly', frame, 0, bh / 2, bh, 0.95);
-        ctx.restore();
-      });
+  P(F, fx, fy) { return [F.x + fx * F.W, F.y + fy * F.H]; }
+  tone() {
+    if (!filterSupported || this.mix <= 0.01) return '';
+    const m = this.mix; return `brightness(${(1 - m * 0.32).toFixed(3)}) saturate(${(1 - m * 0.18).toFixed(3)}) sepia(${(m * 0.22).toFixed(3)})`;
+  }
+  drawAtmosphere(t, F) {
+    const {ctx} = this; const G = PLATES[this.form]; const reduce = reducedMotion();
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    // lamp light breathing at night
+    if (this.mix > 0.05) for (const [fx, fy, fr] of G.lamps) {
+      const [x, y] = this.P(F, fx, fy); const r = fr * F.W * (1 + (reduce ? 0 : Math.sin(t * 2.3 + fx * 9) * 0.04 + Math.sin(t * 7.1) * 0.015));
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, `rgba(255,190,90,${0.28 * this.mix})`); g.addColorStop(1, 'rgba(255,190,90,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
     }
-    if (this.phase === 'night' || this.phase === 'dusk') {
-      ctx.globalCompositeOperation = 'lighter';
-      for (const [x, y, ph, s] of this.flies) {
-        const fx = gx0 + (gx1 - gx0) * ((x + Math.sin(t * 0.12 * s + ph) * 0.06 + 1) % 1);
-        const fy = gy0 + (gy1 - gy0) * (0.55 + y * 0.42) + Math.cos(t * 0.5 * s + ph) * 10;
-        const a = Math.max(0, Math.sin(t * 1.2 * s + ph)) * (this.phase === 'night' ? 0.85 : 0.45);
-        const g = ctx.createRadialGradient(fx, fy, 0, fx, fy, 9);
-        g.addColorStop(0, `rgba(235,255,170,${a})`); g.addColorStop(1, 'rgba(235,255,170,0)');
-        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(fx, fy, 9, 0, TAU); ctx.fill();
+    // day: dust in the window light; night: a few slow golden motes (the library's quiet magic)
+    const [wx0, wy0] = this.P(F, G.window[0], G.window[1]), [wx1, wy1] = this.P(F, G.window[2], G.window[3]);
+    for (const [mx, my, ph, s] of this.motes) {
+      const k = reduce ? 0 : t;
+      const x = lerp(wx0, wx1, (mx + Math.sin(k * 0.13 * s + ph) * 0.08 + 1) % 1);
+      const y = lerp(wy0, F.y + F.H * 0.92, (my + k * 0.012 * s) % 1);
+      const a = (0.25 + 0.5 * Math.sin(k * 0.9 * s + ph) ** 2);
+      if (this.mix < 0.95) { ctx.fillStyle = `rgba(255,246,220,${a * 0.5 * (1 - this.mix)})`; ctx.beginPath(); ctx.arc(x, y, s * 1.2, 0, TAU); ctx.fill(); }
+      if (this.mix > 0.05) {
+        const g = ctx.createRadialGradient(x, y, 0, x, y, 7 * s);
+        g.addColorStop(0, `rgba(255,214,120,${a * 0.8 * this.mix})`); g.addColorStop(1, 'rgba(255,214,120,0)');
+        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, 7 * s, 0, TAU); ctx.fill();
       }
     }
     ctx.restore();
   }
-  slots(F) {
-    const L = LAYOUT[this.form];
-    const n = Math.max(1, this.plants.length);
-    const two = n > 4;
-    const x0 = F.x + L.x0 * F.iw * F.s, x1 = Math.min(this.w - 8, F.x + L.x1 * F.iw * F.s);
-    const step = (x1 - x0) / n;
-    let ph = L.plantH * F.ih * F.s;
-    ph = Math.min(ph, step * (two ? 2.1 : 1.6));
-    return this.plants.map((p, i) => {
-      const back = two && i % 2 === 1;
-      return {p, i, back, cx: x0 + step * (i + 0.5), base: F.y + (back ? L.sillBack : L.sillFront) * F.ih * F.s, ph: ph * (back ? 0.88 : 1)};
-    });
+  layout(F) {
+    const G = PLATES[this.form];
+    const zones = assignZones(this.plants.map(p => p.plant), this.form);
+    const by = {sill: [], shelf: [], hanging: [], floor: []};
+    this.plants.forEach(p => by[zones.get(p.id)]?.push(p));
+    const placed = [];
+    // windowsill: tall plants use the quiet outer edges; shorter plants share the inner sill.
+    const tallSill = by.sill.filter(p => TALL.has(p.spec.kind));
+    const lowSill = by.sill.filter(p => !TALL.has(p.spec.kind));
+    for (const seg of G.sill) packRow(lowSill.map(p => ({spec: p.spec})), seg.x0, seg.x1, seg.y, seg.h, F.H / F.W).forEach((pos, i) => placed.push({p: lowSill[i], zone: 'sill', ...pos}));
+    const tallBoards = G.tallSill.map(() => []);
+    tallSill.forEach((p, i) => tallBoards[i % tallBoards.length].push(p));
+    tallBoards.forEach((list, b) => { const seg = G.tallSill[b]; packRow(list.map(p => ({spec: p.spec})), seg.x0, seg.x1, seg.y, seg.h, F.H / F.W).forEach((pos, i) => placed.push({p: list[i], zone: 'sill', ...pos})); });
+    // shelves: spread across the boards, balancing width
+    const boards = G.shelf.map(() => []);
+    by.shelf.forEach((p, i) => boards[i % boards.length].push(p));
+    boards.forEach((list, b) => { const seg = G.shelf[b]; packRow(list.map(p => ({spec: p.spec})), seg.x0, seg.x1, seg.y, seg.h, F.H / F.W).forEach((pos, i) => placed.push({p: list[i], zone: 'shelf', ...pos})); });
+    // floor: reserved for tall plants, safely to the left of the leopard
+    for (const seg of G.floor) packRow(by.floor.map(p => ({spec: p.spec})), seg.x0, seg.x1, seg.y, seg.h, F.H / F.W).forEach((pos, i) => placed.push({p: by.floor[i], zone: 'floor', ...pos}));
+    // hanging: share the rail's open stretches between plants, then hang each from its own point
+    const H = G.hanging; const n = by.hanging.length;
+    if (n) {
+      const total = H.xs.reduce((a, [a0, a1]) => a + (a1 - a0), 0);
+      const per = H.xs.map(([a0, a1]) => Math.round(n * (a1 - a0) / total));
+      let diff = n - per.reduce((a, b) => a + b, 0); for (let i = 0; diff !== 0; i = (i + 1) % per.length) { per[i] += Math.sign(diff); diff -= Math.sign(diff); }
+      let k = 0;
+      H.xs.forEach(([a0, a1], si) => {
+        const list = by.hanging.slice(k, k + per[si]); k += per[si];
+        packRow(list.map(p => ({spec: p.spec})), a0, a1, 0, H.h, F.H / F.W).forEach((pos, i) => placed.push({p: list[i], zone: 'hanging', ...pos, y: H.rail + H.drop + pos.h}));
+      });
+    }
+    return placed.map(o => ({...o, x: F.x + o.cx * F.W, base: F.y + o.y * F.H, ph: o.h * F.H, pw: o.w * F.W}));
   }
   drawPlants(t, F) {
-    const {ctx} = this;
+    const {ctx} = this; const G = PLATES[this.form];
     const gust = this.pointer.x >= 0 ? clamp(this.pointer.vx / 30, -1, 1) : 0;
     this.wind = lerp(this.wind, gust, 0.06); this.pointer.vx *= 0.88;
-    const L = LAYOUT[this.form];
-    if (!this.plants.length) {
-      const spec = {kind: 'sprout', flip: false, size: 1, hue: 0, phase: 0};
-      const cx = F.x + (L.x0 + L.x1) / 2 * F.iw * F.s;
-      drawPlantSprite(ctx, spec, cx, F.y + L.sillFront * F.ih * F.s, L.plantH * F.ih * F.s, {tone: this.tone, reveal: easeOut((t - this.start - 0.4) / 1.4)});
-      return;
-    }
-    const slots = this.slots(F).sort((a, b) => (b.back - a.back));
-    for (const s of slots) {
+    const tone = this.tone();
+    if (!this.plants.length) return;
+    for (const s of this.layout(F)) {
       const {p} = s;
-      const near = this.pointer.x >= 0 ? clamp(1 - Math.abs(this.pointer.x - s.cx) / (s.ph * 0.9)) : 0;
+      const near = this.pointer.x >= 0 ? clamp(1 - Math.abs(this.pointer.x - s.x) / (s.ph * 0.9)) : 0;
       const perk = clamp(1 - (t - (p.perkAt ?? -10)) / 1.8);
-      const idle = reducedMotion() ? 0 : Math.sin(t * 0.9 + p.spec.phase) * 0.018;
-      const sway = idle + this.wind * near * 0.18 + Math.sin((t - (p.perkAt ?? 0)) * 8) * 0.05 * perk;
-      const isHover = this.hover?.id === p.id;
-      const box = drawPlantSprite(ctx, p.spec, s.cx, s.base, s.ph, {tone: this.tone,
-        reveal: easeOut((t - p.born) / 1.3), sway, droop: p.droop ? 0.75 : 0,
-        glow: Math.max(isHover ? 0.9 : 0, perk), dim: s.back ? 0.06 : 0, scale: 1 + Math.sin(Math.PI * perk) * 0.04
-      });
-      if (box && p.wet) for (let i = 0; i < 5; i++) {
-        const a = 0.35 + 0.65 * Math.abs(Math.sin(t * 1.3 + i * 1.9 + p.spec.phase));
-        glint(ctx, s.cx + Math.cos(i * 2.1 + p.spec.phase) * box.W * 0.3, s.base - box.H * (0.4 + 0.45 * ((i * 0.29 + p.spec.phase) % 1)), Math.max(3, box.H * 0.03), a);
+      const reduce = reducedMotion();
+      let sway = (reduce ? 0 : Math.sin(t * 0.9 + p.spec.phase) * 0.015) + this.wind * near * 0.16 + Math.sin((t - (p.perkAt ?? 0)) * 8) * 0.05 * perk;
+      let x = s.x;
+      if (s.zone === 'hanging') {
+        // the pot swings gently from its chain
+        const swing = reduce ? 0 : Math.sin(t * 0.8 + p.spec.phase) * 0.018 + this.wind * near * 0.05;
+        const [, ry] = this.P(F, 0, G.hanging.rail);
+        const len = s.base - s.ph * 0.18 - ry;
+        x = s.x + Math.sin(swing) * len; sway *= 0.5;
+        ctx.save(); ctx.strokeStyle = this.mix > 0.5 ? 'rgba(160,128,70,.85)' : 'rgba(150,118,60,.9)'; ctx.lineWidth = Math.max(1, F.W * 0.0012);
+        const mounted = MOUNTED.has(p.spec.kind);
+        const potTop = mounted ? s.base - s.ph * 0.96 : s.base - s.ph * 0.18; const spread = mounted ? 0 : s.pw * 0.18;
+        for (const dx of mounted ? [0] : [-spread, 0, spread]) { ctx.beginPath(); ctx.moveTo(s.x, ry); ctx.lineTo(x + dx, potTop); ctx.stroke(); }
+        ctx.fillStyle = 'rgba(170,135,70,1)'; ctx.beginPath(); ctx.arc(s.x, ry, Math.max(2, F.W * 0.003), 0, TAU); ctx.fill();
+        ctx.restore();
       }
-      if (box) this.hit.push({id: p.id, name: p.plant.name, back: s.back, cx: s.cx, base: s.base, ph: s.ph, x0: s.cx - box.W * 0.45, x1: s.cx + box.W * 0.45, y0: s.base - box.H, y1: s.base + 4});
+      const isHover = this.hover?.id === p.id;
+      const box = drawPlant(ctx, p.spec, x, s.base, s.ph, {tone, reveal: easeOut((t - p.born) / 1.3), sway, droop: p.droop ? 0.75 : 0, glow: Math.max(isHover ? 0.9 : 0, perk), scale: 1 + Math.sin(Math.PI * perk) * 0.04, noShadow: s.zone === 'hanging'});
+      if (box && p.wet) for (let i = 0; i < 4; i++) glint(ctx, x + Math.cos(i * 2.1 + p.spec.phase) * box.W * 0.28, s.base - box.H * (0.4 + 0.45 * ((i * 0.29 + p.spec.phase) % 1)), Math.max(2.5, box.H * 0.03), 0.35 + 0.65 * Math.abs(Math.sin(t * 1.3 + i * 1.9 + p.spec.phase)));
+      if (box) this.hit.push({id: p.id, name: p.plant.name, zone: s.zone, cx: x, base: s.base, ph: s.ph, x0: x - box.W * 0.5, x1: x + box.W * 0.5, y0: s.base - box.H, y1: s.base + 4});
     }
   }
   drawCat(t, F) {
-    const {ctx} = this; const L = LAYOUT[this.form];
-    const x = F.x + L.catX * F.iw * F.s, y = F.y + L.sillFront * F.ih * F.s;
-    const h = clamp(L.plantH * F.ih * F.s * 0.62, 34, 150);
-    const reduce = reducedMotion();
-    if (this.phase === 'night') {
+    const {ctx} = this; const G = PLATES[this.form]; const reduce = reducedMotion(); const tone = this.tone();
+    if (this.mix > 0.5) {
       const img = ready('cat-sleep'); if (!img) return;
-      const H = h * 0.62, W = H * img.width / img.height;
-      const breathe = reduce ? 1 : 1 + Math.sin(t * 1.4) * 0.018;
-      ctx.save(); ctx.translate(x, y);
-      ctx.fillStyle = 'rgba(30,20,10,.28)'; ctx.beginPath(); ctx.ellipse(0, 0, W * 0.48, H * 0.08, 0, 0, TAU); ctx.fill();
-      ctx.scale(1, breathe); if (this.tone) ctx.filter = this.tone; ctx.drawImage(img, -W / 2, -H, W, H); ctx.restore();
+      const [x, y] = this.P(F, G.sleep.x, G.sleep.y); const H = G.sleep.h * F.H, W = H * img.width / img.height;
+      const breathe = reduce ? 1 : 1 + Math.sin(t * 1.4) * 0.02;
+      ctx.save(); ctx.translate(x, y); ctx.scale(1, breathe); if (tone) ctx.filter = tone; ctx.drawImage(img, -W / 2, -H, W, H); ctx.restore();
       if (!reduce) for (let i = 0; i < 3; i++) {
-        const k = ((t * 0.35 + i / 3) % 1);
-        ctx.save(); ctx.globalAlpha = Math.sin(Math.PI * k) * 0.8;
-        ctx.fillStyle = '#f3ead6'; ctx.font = `${Math.round(h * (0.16 + k * 0.12))}px "LXGW WenKai Screen", "Kaiti SC", serif`;
-        ctx.fillText('z', x + W * 0.25 + k * h * 0.35, y - H * 0.9 - k * h * 0.6); ctx.restore();
+        const k = (t * 0.35 + i / 3) % 1;
+        ctx.save(); ctx.globalAlpha = Math.sin(Math.PI * k) * 0.85; ctx.fillStyle = '#f1e2bf';
+        ctx.font = `italic ${Math.round(H * (0.22 + k * 0.18))}px "IM Fell English", Georgia, serif`;
+        ctx.fillText('z', x + W * 0.3 + k * H * 0.4, y - H * 1.0 - k * H * 0.7); ctx.restore();
       }
       this.hit.push({cat: 'sleep', x0: x - W / 2, x1: x + W / 2, y0: y - H, y1: y});
       return;
     }
-    ctx.fillStyle = 'rgba(30,20,10,.25)'; ctx.beginPath(); ctx.ellipse(x, y, h * 0.32, h * 0.05, 0, 0, TAU); ctx.fill();
-    const wantLook = this.hover?.cat || t < this.catHappyUntil ? 1 : 0;
-    this.catLook = lerp(this.catLook, wantLook, 0.09);
+    const [x, y] = this.P(F, G.cat.x, G.cat.y); const h = G.cat.h * F.H;
+    const want = this.hover?.cat || t < this.catHappyUntil ? 1 : 0;
+    this.catLook = lerp(this.catLook, want, 0.09);
+    const strip = (name, frame) => {
+      const img = ready(name); if (!img) return;
+      const cw = img.width / 4, W = h * cw / img.height, ax = name === 'cat-look' ? 0.528 : 0.503;
+      ctx.save(); ctx.translate(x, y); if (tone) ctx.filter = tone; ctx.drawImage(img, cw * frame, 0, cw, img.height, -W * ax, -h, W, h); ctx.restore();
+    };
     if (this.catLook > 0.02) {
-      // turning toward the viewer: blend through the look frames
       const happy = t < this.catHappyUntil;
-      const f = this.catLook > 0.85 ? (happy ? 3 : 2) : this.catLook > 0.35 ? 1 : 0;
-      drawStripFrame(ctx, 'cat-look', f, x, y, h, 1, this.tone);
+      strip('cat-look', this.catLook > 0.85 ? (happy ? 3 : 2) : this.catLook > 0.35 ? 1 : 0);
       if (happy && !reduce) {
         const q = clamp((this.catHappyUntil - t) / 2.2);
-        ctx.save(); ctx.globalAlpha = Math.sin(Math.PI * q); ctx.fillStyle = '#e48a8a';
+        ctx.save(); ctx.globalAlpha = Math.sin(Math.PI * q); ctx.fillStyle = '#9c3b3b';
         const hx = x + h * 0.22, hy = y - h * 1.05 - (1 - q) * h * 0.3, s = h * 0.07;
         ctx.beginPath(); ctx.moveTo(hx, hy + s); ctx.bezierCurveTo(hx - s * 1.6, hy - s * 0.4, hx - s * 0.5, hy - s * 1.4, hx, hy - s * 0.5); ctx.bezierCurveTo(hx + s * 0.5, hy - s * 1.4, hx + s * 1.6, hy - s * 0.4, hx, hy + s); ctx.fill();
         ctx.restore();
       }
     } else {
-      // idle: the tail swishes through frames 0 → 1 → 2 → 1 → 0 → 3 → 0
       const seq = [0, 1, 2, 1, 0, 0, 3, 0];
-      const speed = reduce ? 0 : 0.85;
-      const i = Math.floor((t * speed) % seq.length);
-      drawStripFrame(ctx, 'cat-tail', seq[i], x, y, h, 1, this.tone);
+      strip('cat-tail', seq[Math.floor((reduce ? 0 : t * 0.85) % seq.length)]);
     }
     this.hit.push({cat: 'awake', x0: x - h * 0.3, x1: x + h * 0.3, y0: y - h, y1: y});
   }
   draw() {
     const t = now(); const {ctx, dpr} = this;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, this.w, this.h);
     this.hit = [];
-    const F = this.drawBackdrop(t);
-    this.tone = filterSupported ? toneAt(currentHour()) : '';
-    this.drawLife(t, F);
-    this.drawCat(t, F);
+    const F = this.drawPlate(t);
     this.drawPlants(t, F);
-    this.actions.forEach(a => a.draw(ctx, t));
-    this.actions = this.actions.filter(a => !a.done);
-    this.canvas.dataset.phase = this.phase;
-    this.anchors = this.slots(F);
+    this.drawAtmosphere(t, F);
+    this.actions.forEach(a => a.draw(ctx, t)); this.actions = this.actions.filter(a => !a.done);
+    this.canvas.dataset.phase = this.mix > 0.5 ? 'night' : 'day';
   }
   loop() {
     if (this.raf) return;
@@ -656,13 +688,11 @@ class GardenScene {
       this.raf = 0;
       if (!this.visible || document.hidden) return;
       this.draw();
-      const busy = this.actions.length || now() - this.start < 4 || this.plants.some(p => now() - p.born < 1.4);
+      const busy = this.actions.length || this.fadeAt != null || now() - this.start < 4 || this.plants.some(p => now() - p.born < 1.4);
       if (!reducedMotion() || busy) this.raf = requestAnimationFrame(tick);
     };
     this.raf = requestAnimationFrame(tick);
   }
-  /** Canvas-space position of a plant's top, for DOM labels. */
-  anchorOf(id) { const h = this.hit.find(x => x.id === id); return h ? {x: h.cx, y: h.y0} : null; }
 }
 
 const EXAMPLE_IMPORT={"format":"xiaomao-chat-import","version":1,"plants":[{"name":"演示｜小白鹰","species":"鹿角蕨","location":"正对窗户的墙面"}],"entries":[{"plant":"演示｜小白鹰","kind":"care","care":"water","date":"2026-10-17","dateLabel":null,"text":"演示记录：今天泡水一次。","source":{"kind":"demo","conversation":"植物APP设计","quote":"假设你跟我说：今天鹿角蕨泡水了，发现它长了一个新的小芽。","note":"这是功能演示，不是实际发生的养护。"}},{"plant":"演示｜小白鹰","kind":"observation","care":null,"date":"2026-10-17","dateLabel":null,"text":"演示观察：发现一个新的小芽。","source":{"kind":"demo","conversation":"植物APP设计","quote":"假设你跟我说：今天鹿角蕨泡水了，发现它长了一个新的小芽。","note":"这是功能演示，不是念念已经确认的观察。"}},{"plant":"演示｜小白鹰","kind":"hypothesis","care":null,"date":"2026-10-17","dateLabel":null,"text":"演示猜想：新的胞子叶未来可能朝光源方向生长。","source":{"kind":"demo","conversation":"植物APP设计","quote":"园长的猜想：未来可能会朝光源方向生长。","note":"猜想与观察分开保存；尚未验证。"}},{"plant":"演示｜小白鹰","kind":"plan","care":null,"date":"2026-10-17","dateLabel":null,"text":"演示计划：以后从相同角度拍照，继续观察新叶的生长方向。","source":{"kind":"demo","conversation":"植物APP设计","quote":"选两张不同日期的照片，左右滑动比较。","note":"这是未来计划，不代表已经拍摄。"}}]};
@@ -676,6 +706,10 @@ const CARE_META={water:{icon:'💧',short:'浇水'},mist:{icon:'◌',short:'喷�
 const TOOL_IMG=kind=>`<img class="tool-icon" src="./assets/tool-${kind}.webp" alt="" aria-hidden="true">`;
 let scene=null;const portraits=new Map();const grownPortraits=new Set();
 const WEEKDAYS=['日','一','二','三','四','五','六'];
+const CN_DIGITS='〇一二三四五六七八九';
+function cnNumber(n){if(n<=10)return n===10?'十':CN_DIGITS[n];if(n<20)return '十'+CN_DIGITS[n-10];const t=Math.floor(n/10),u=n%10;return CN_DIGITS[t]+'十'+(u?CN_DIGITS[u]:'')}
+const specimenNo=i=>`No. ${String(i+1).padStart(2,'0')}`;
+function applyPhase(){const mode=getMode();const phase=resolvedPhase(mode);document.documentElement.dataset.theme=phase;for(const b of document.querySelectorAll('[data-mode]')){const on=b.dataset.mode===mode;b.classList.toggle('active',on);b.setAttribute('aria-pressed',String(on))}const note=$('modeNote');if(note)note.textContent=mode==='auto'?`跟随本机时间，现在是${phase==='night'?'夜晚':'白昼'}`:'已手动切换';scene?.setPhase(phase);const meta=document.querySelector('meta[name="theme-color"]');if(meta)meta.content=phase==='night'?'#141a22':'#e8dcc5'}
 const daysBetween=(a,b)=>Math.round((Date.parse(`${b}T12:00:00Z`)-Date.parse(`${a}T12:00:00Z`))/86400000);
 function lastCare(plantId,kind,now=today()){return entries.filter(e=>e.plantId===plantId&&e.kind==='care'&&e.care===kind&&e.date&&e.date<=now).map(e=>e.date).sort().at(-1)||null}
 function plantMood(p,now=today()){const status=checkStatus(p,entries,now);const water=lastCare(p.id,'water',now);return {status,droop:status.check,wet:Boolean(water&&daysBetween(water,now)<=1)}}
@@ -685,9 +719,9 @@ function show(dialog){dialog.showModal()}
 function close(dialog){dialog.close()}
 async function refresh(){const loaded=await Promise.all([all('plants'),all('entries'),all('meta')]);plants=loaded[0].sort((a,b)=>a.name.localeCompare(b.name,'zh'));entries=loaded[1];metaRecords=loaded[2];render()}
 function render(){renderHero();renderCare();renderCareHistory();renderJournal();const last=metaRecords.find(x=>x.key==='lastImport');if($('lastImportDate'))$('lastImportDate').textContent=last?.batchDate||'尚未整理';const backup=backupState();if($('lastBackupDate'))$('lastBackupDate').textContent=backup.at?`${dateText(backup.at)}（${backup.days===0?'今天':backup.days+' 天前'}）`:'尚未备份'}
-function renderHero(){const now=today();const d=new Date(`${now}T12:00:00`);$('todayLabel').textContent=`${d.getMonth()+1}月${d.getDate()}日，星期${WEEKDAYS[d.getDay()]}`;$('heroTitle').textContent=`${greeting(currentHour())}，念念`;const due=plants.filter(p=>checkStatus(p,entries,now).check);$('heroStatus').textContent=!plants.length?'窗台还空着。让第一盆植物入住，它会出现在这扇窗前。':due.length?`窗台上有 ${plants.length} 盆植物，${due.slice(0,3).map(p=>p.name).join('、')}${due.length>3?' 等':''}到了该看看的时候。`:`窗台上有 ${plants.length} 盆植物，今天都不用特别照顾。`;$('heroRound').textContent=plants.length?'开始巡园':'让第一盆入住';if(scene)scene.setPlants(plants.map(p=>{const m=plantMood(p,now);return {id:p.id,plant:p,droop:m.droop,wet:m.wet}}))}
+function renderHero(){const now=today();const d=new Date(`${now}T12:00:00`);$('todayLabel').textContent=`${d.getMonth()+1}月${d.getDate()}日，星期${WEEKDAYS[d.getDay()]}`;$('heroTitle').textContent=`${greeting(currentHour())}，念念`;const due=plants.filter(p=>checkStatus(p,entries,now).check);$('heroStatus').textContent=!plants.length?'温室还空着。让第一盆植物入住，它会出现在窗台、吊架或书柜上。':due.length?`温室里有 ${plants.length} 盆植物，${due.slice(0,3).map(p=>p.name).join('、')}${due.length>3?' 等':''}到了该看看的时候。`:`温室里有 ${plants.length} 盆植物，今天都不用特别照顾。`;$('heroRound').textContent=plants.length?'开始巡园':'让第一盆入住';if(scene)scene.setPlants(plants.map(p=>{const m=plantMood(p,now);return {id:p.id,plant:p,droop:m.droop,wet:m.wet}}))}
 function mountPortraits(root){for(const [canvas,portrait] of portraits)if(!canvas.isConnected){portrait.destroy();portraits.delete(canvas)}
-  for(const canvas of root.querySelectorAll('canvas[data-portrait]')){if(portraits.has(canvas))continue;const p=plants.find(x=>x.id===canvas.dataset.portrait);if(!p)continue;const m=plantMood(p);const key=`${root.id}:${p.id}`;portraits.set(canvas,new PlantPortrait(canvas,p,{droop:m.droop,wet:m.wet,animateGrow:!grownPortraits.has(key)}));grownPortraits.add(key)}}
+  for(const canvas of root.querySelectorAll('canvas[data-portrait]')){if(portraits.has(canvas))continue;const p=plants.find(x=>x.id===canvas.dataset.portrait);if(!p)continue;const m=plantMood(p);const key=`${root.id}:${p.id}:${(p.portraitDataUrl||'').length}`;portraits.set(canvas,new PlantPortrait(canvas,p,{droop:m.droop,wet:m.wet,animateGrow:!grownPortraits.has(key),base:Number(canvas.dataset.base||0.95),fill:Number(canvas.dataset.fill||0.88),noShadow:canvas.hasAttribute('data-noshadow')}));grownPortraits.add(key)}}
 function celebrate(plantId,kind){for(const [canvas,portrait] of portraits)if(canvas.dataset.portrait===plantId&&canvas.closest('#plantCards'))portrait.play(kind);scene?.play(plantId,kind);const card=$('plantCards').querySelector(`[data-card="${CSS.escape(plantId)}"]`);if(card){card.classList.remove('just-cared');void card.offsetWidth;card.classList.add('just-cared')}}
 const BACKUP_REMIND_DAYS=14;
 function backupState(){const last=metaRecords.find(x=>x.key==='lastBackup');const at=last?.completedAt?.slice(0,10)||null;const days=at?Math.max(0,Math.floor((Date.parse(`${today()}T12:00:00Z`)-Date.parse(`${at}T12:00:00Z`))/86400000)):null;return {at,days,due:entries.length>0&&(days===null||days>=BACKUP_REMIND_DAYS)}}
@@ -699,11 +733,14 @@ function sourceText(source){if(!source)return '未标注来源';return `${SOURCE
 function renderCare(){const now=today();const toCheck=plants.filter(p=>checkStatus(p,entries,now).check).length;const b=backupState();
   $('careSummary').innerHTML=`<span><b>${plants.length}</b> 盆植物</span><span class="${toCheck?'due':''}"><b>${toCheck}</b> 盆可以检查了</span>${b.due?`<button type="button" class="summary-backup" id="backupNudge">${b.at?`已经 ${b.days} 天没有备份`:'还没有备份过'}，去备份</button>`:''}`;
   $('backupNudge')?.addEventListener('click',()=>show($('backupDialog')));
+  const zones=assignZones(plants,'wide');
   $('plantCards').innerHTML=plants.length?plants.map((p,i)=>{const status=checkStatus(p,entries,now);const basis=status.basis;const lastBasis=status.last;const since=lastBasis?daysBetween(lastBasis,now):null;const every=p.checkEveryDays;const progress=every?(since===null?1:Math.min(1,since/every)):0;const reminderLabel=CARE_META[basis]?.short||'养护';
     const moisture=entries.filter(e=>e.plantId===p.id&&e.kind==='moisture').sort((a,b)=>(b.observedAt||b.date||'').localeCompare(a.observedAt||a.date||''))[0];
     const sinceText=since===null?`还没有${reminderLabel}记录`:since===0?`今天${reminderLabel}过`:`${since} 天前${reminderLabel}`;
-    const cycle=every?`<div class="cycle" style="--p:${progress.toFixed(3)}" role="img" aria-label="${esc(sinceText)}，每 ${every} 天看看"><svg viewBox="0 0 44 44" aria-hidden="true"><circle class="cycle-track" cx="22" cy="22" r="19"/><circle class="cycle-fill" cx="22" cy="22" r="19" pathLength="1"/></svg><span><strong>${esc(sinceText)}</strong><small>距上次${reminderLabel} ${every} 天时提示检查</small></span></div>`:`<div class="cycle is-off"><span><strong>${esc(sinceText)}</strong><small>尚未设置检查提示</small></span></div>`;
-    return `<article class="plant-card ${status.check?'is-due':''}" data-card="${esc(p.id)}" style="--i:${i}"><div class="plant-stage"><canvas data-portrait="${esc(p.id)}" aria-hidden="true"></canvas>${status.check?'<span class="due-tag">可以检查一下了</span>':''}</div><div class="plant-body"><header class="plant-head"><h3>${esc(p.name)}</h3><p class="plant-sub">${esc([p.species,p.location].filter(Boolean).join('，')||'一位新住客')}</p></header>${cycle}<dl class="care-dates">${Object.entries(CARE_META).map(([kind,meta])=>{const d=lastCare(p.id,kind,now);return `<div class="${kind===basis&&every?'is-basis':''}"><dt>上次${meta.short}</dt><dd>${d?dateText(d):'尚未记录'}</dd></div>`}).join('')}</dl><div class="care-buttons">${Object.entries(CARE_META).map(([kind,meta])=>`<button type="button" data-care="${kind}" data-plant="${esc(p.id)}">${TOOL_IMG(kind)}<span>${meta.short}</span></button>`).join('')}</div>${p.moistureEnabled?`<div class="moisture-actions"><span class="moisture-meter">${moisture?`<span class="meter" aria-hidden="true">${Array.from({length:10},(_,k)=>`<i class="${k<moisture.moistureValue?'on':''}"></i>`).join('')}</span>`:''}<b>土壤湿度 ${moisture?`${moisture.moistureValue}/10`:'尚未记录'}</b></span><button type="button" data-moisture="${esc(p.id)}">记录</button><button type="button" data-moisturehistory="${esc(p.id)}">趋势</button></div>`:''}<footer class="card-foot"><button type="button" data-editplant="${esc(p.id)}">修改档案</button><button type="button" data-openplant="${esc(p.id)}">看手记</button></footer></div></article>`}).join(''):`<div class="empty-state"><b>园里还静悄悄的。</b><p>先让第一盆植物入住，或者从资料匣导入聊天整理稿。</p><button class="primary-button" type="button" data-addplant>＋ 植物入住</button></div>`;
+    const ticks=Array.from({length:12},(_,k)=>{const a=k/12*Math.PI*2;return `<line x1="${(22+Math.sin(a)*17).toFixed(1)}" y1="${(22-Math.cos(a)*17).toFixed(1)}" x2="${(22+Math.sin(a)*20).toFixed(1)}" y2="${(22-Math.cos(a)*20).toFixed(1)}"/>`}).join('');
+    const angle=(progress*360).toFixed(1);
+    const cycle=every?`<div class="cycle" style="--p:${progress.toFixed(3)}" role="img" aria-label="${esc(sinceText)}，每 ${every} 天看看"><svg class="dial" viewBox="0 0 44 44" aria-hidden="true"><circle class="dial-face" cx="22" cy="22" r="20.5"/><g class="dial-ticks">${ticks}</g><circle class="cycle-fill" cx="22" cy="22" r="13.5" pathLength="1"/><line class="dial-hand" x1="22" y1="22" x2="22" y2="6" style="transform:rotate(${angle}deg)"/><circle class="dial-pin" cx="22" cy="22" r="2"/></svg><span><strong>${esc(sinceText)}</strong><small>距上次${reminderLabel} ${every} 天时提示检查</small></span></div>`:`<div class="cycle is-off"><span><strong>${esc(sinceText)}</strong><small>尚未设置检查提示</small></span></div>`;
+    return `<article class="plant-card ${status.check?'is-due':''}" data-card="${esc(p.id)}" style="--i:${i}"><header class="label-head"><span class="specimen-no">${specimenNo(i)}</span><span class="zone-tag">${esc(ZONES[zones.get(p.id)]||'')}${p.zone&&p.zone!=='auto'?'':'（自动）'}</span></header><div class="label-main"><div class="cameo"><canvas data-portrait="${esc(p.id)}" aria-hidden="true"></canvas></div><div class="plant-head"><h3>${esc(p.name)}</h3><p class="plant-sub">${esc([p.species,p.location].filter(Boolean).join('，')||'一位新住客')}</p>${status.check?'<span class="due-tag">可以检查一下了</span>':''}</div></div><div class="plant-body">${cycle}<dl class="care-dates">${Object.entries(CARE_META).map(([kind,meta])=>{const d=lastCare(p.id,kind,now);return `<div class="${kind===basis&&every?'is-basis':''}"><dt>上次${meta.short}</dt><dd>${d?dateText(d):'尚未记录'}</dd></div>`}).join('')}</dl><div class="care-buttons">${Object.entries(CARE_META).map(([kind,meta])=>`<button type="button" data-care="${kind}" data-plant="${esc(p.id)}">${TOOL_IMG(kind)}<span>${meta.short}</span></button>`).join('')}</div>${p.moistureEnabled?`<div class="moisture-actions"><span class="moisture-meter">${moisture?`<span class="meter" aria-hidden="true">${Array.from({length:10},(_,k)=>`<i class="${k<moisture.moistureValue?'on':''}"></i>`).join('')}</span>`:''}<b>土壤湿度 ${moisture?`${moisture.moistureValue}/10`:'尚未记录'}</b></span><button type="button" data-moisture="${esc(p.id)}">记录</button><button type="button" data-moisturehistory="${esc(p.id)}">趋势</button></div>`:''}<footer class="card-foot"><button type="button" data-editplant="${esc(p.id)}">修改档案</button><button type="button" data-openplant="${esc(p.id)}">翻到手记</button></footer></div></article>`}).join(''):`<div class="empty-state"><b>工作台上还没有标本。</b><p>先让第一盆植物入住，或者从资料匣导入聊天整理稿。</p><button class="primary-button" type="button" data-addplant>＋ 植物入住</button></div>`;
   mountPortraits($('plantCards'));
 }
 function careDetailsText(e){if(e.care!=='pest'||!e.pestDetails)return '';return [e.pestDetails.product&&`药剂：${e.pestDetails.product}`,e.pestDetails.area&&`部位：${e.pestDetails.area}`,e.pestDetails.note].filter(Boolean).join(' · ')}
@@ -711,27 +748,34 @@ function careRecordHtml(e){const p=plants.find(p=>p.id===e.plantId);const meta=C
 function filteredCareEntries(){const plant=$('carePlantFilter')?.value||'';const kind=$('careTypeFilter')?.value||'';return entries.filter(e=>e.kind==='care'&&e.date&&e.date.startsWith(careMonth)&&(!plant||e.plantId===plant)&&(!kind||e.care===kind)).sort((a,b)=>b.date.localeCompare(a.date)||(b.createdAt||'').localeCompare(a.createdAt||''))}
 function renderCareHistory(){if(!$('careCalendar'))return;const priorPlant=$('carePlantFilter').value;$('carePlantFilter').innerHTML='<option value="">全部植物</option>'+plants.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');if(plants.some(p=>p.id===priorPlant))$('carePlantFilter').value=priorPlant;const [year,month]=careMonth.split('-').map(Number);$('careMonthLabel').textContent=`${year}年 ${month}月`;const monthEntries=filteredCareEntries();const byDay=new Map();for(const e of monthEntries){if(!byDay.has(e.date))byDay.set(e.date,[]);byDay.get(e.date).push(e)}const first=new Date(year,month-1,1);const days=new Date(year,month,0).getDate();const mondayOffset=(first.getDay()+6)%7;let cells='';for(let i=0;i<mondayOffset;i++)cells+='<span class="calendar-cell blank"></span>';for(let day=1;day<=days;day++){const date=`${careMonth}-${String(day).padStart(2,'0')}`;const dayEntries=byDay.get(date)||[];const kinds=[...new Set(dayEntries.map(e=>e.care))];cells+=`<button type="button" class="calendar-cell ${selectedCareDay===date?'selected':''} ${date===today()?'today':''}" data-careday="${date}"><span>${day}</span><span class="calendar-dots">${kinds.map(k=>`<i class="${esc(k)}" title="${esc(CARE_META[k]?.short||k)}"></i>`).join('')}</span></button>`}$('careCalendar').innerHTML=`<div class="calendar-weekdays"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div><div class="calendar-grid">${cells}</div>`;$('careHistoryList').innerHTML=monthEntries.length?monthEntries.map(careRecordHtml).join(''):'<p class="muted">这个月还没有符合筛选条件的养护记录。</p>';$('careCalendar').hidden=careView!=='calendar';$('careHistoryList').hidden=careView!=='list';$('calendarViewButton').classList.toggle('active',careView==='calendar');$('listViewButton').classList.toggle('active',careView==='list');const dayEntries=selectedCareDay?(byDay.get(selectedCareDay)||[]):[];$('careDayDetails').innerHTML=selectedCareDay?`<div class="day-detail-head"><strong>${esc(selectedCareDay)} 的照顾记录</strong><button type="button" data-clearcareday>收起</button></div>${dayEntries.length?dayEntries.map(careRecordHtml).join(''):'<p class="muted">这一天没有符合筛选条件的记录。</p>'}`:''}
 function renderJournal(){
-  $('plantCount').textContent=`${plants.length} 株`;
-  if(!plants.length){$('plantList').innerHTML='';$('journalContent').innerHTML='<div class="empty-state"><b>第一页，还在等你。</b>植物入住以后，会自动拥有自己的手记主页。</div>';return}
+  $('plantCount').textContent=`共 ${plants.length} 章`;
+  if(!plants.length){$('plantList').innerHTML='';$('journalContent').innerHTML='<div class="empty-state"><b>手稿的第一页还空着。</b><p>植物入住以后，会自动拥有属于自己的一章。</p></div>';return}
   if(!plants.some(p=>p.id===selectedPlant))selectedPlant=plants[0].id;
-  $('plantList').innerHTML=plants.map(p=>{const plantPhotos=entries.filter(e=>e.plantId===p.id&&e.kind!=='care'&&e.photoDataUrl).sort((a,b)=>(b.date||'').localeCompare(a.date||''));const image=plantPhotos[0]?.photoDataUrl;return `<button type="button" class="${selectedPlant===p.id?'active':''}" data-selectplant="${esc(p.id)}" aria-label="打开${esc(p.name)}的主页"><span class="plant-avatar small">${image?`<img src="${esc(image)}" alt="">`:`<canvas data-portrait="${esc(p.id)}"></canvas>`}</span><span>${esc(p.name)}</span></button>`}).join('');
-  const p=plants.find(p=>p.id===selectedPlant);
+  $('plantList').innerHTML=plants.map((p,i)=>`<button type="button" class="${selectedPlant===p.id?'active':''}" data-selectplant="${esc(p.id)}" aria-label="打开${esc(p.name)}的一章"><span class="toc-no">第${cnNumber(i+1)}章</span><span class="toc-name">${esc(p.name)}</span><span class="plant-avatar small"><canvas data-portrait="${esc(p.id)}" data-base=".96" data-fill=".9" data-noshadow></canvas></span></button>`).join('');
+  const index=plants.findIndex(p=>p.id===selectedPlant);const p=plants[index];
   const legacyKnowledge=entries.filter(e=>e.plantId===p.id&&e.kind==='knowledge').sort((a,b)=>(b.date||'').localeCompare(a.date||''));
   const allEntries=entries.filter(e=>e.plantId===p.id&&!['care','knowledge','moisture'].includes(e.kind)).sort((a,b)=>(b.date||'').localeCompare(a.date||'')||(b.createdAt||'').localeCompare(a.createdAt||''));
-  const observations=allEntries.filter(e=>e.kind==='observation').length;
+  const observations=allEntries.filter(e=>e.kind==='observation').length;const hypotheses=allEntries.filter(e=>e.kind==='hypothesis').length;
   const photos=allEntries.filter(e=>e.photoDataUrl).sort((a,b)=>(a.date||'').localeCompare(b.date||''));
-  const latestPhoto=photos.at(-1)?.photoDataUrl;
-  const photoOptions=(selectedId)=>photos.map(e=>`<option value="${esc(e.id)}" ${e.id===selectedId?'selected':''}>${esc(e.date||e.dateLabel)} · ${esc(e.text.slice(0,24))}</option>`).join('');
-  const photoHtml=photos.length?`<section class="album-section"><div class="subsection-head"><div><h4>成长相册</h4></div><span>${photos.length} 张照片</span></div><div class="album-strip">${photos.map(e=>`<figure><img src="${esc(e.photoDataUrl)}" alt="${esc(p.name)} ${esc(e.date||e.dateLabel)}"><figcaption>${esc(e.date||e.dateLabel)}</figcaption></figure>`).join('')}</div>${photos.length>=2?`<div class="compare-picker"><label>较早<select id="comparePhotoA">${photoOptions(photos[0].id)}</select></label><label>较晚<select id="comparePhotoB">${photoOptions(photos.at(-1).id)}</select></label><button class="outline-button" type="button" data-comparephotos>对比照片</button></div><div id="selectedPhotoCompare" class="photo-compare">${compareSliderHtml(photos[0],photos.at(-1))}</div>`:''}</section>`:'<section class="album-section empty-album"><p>还没有照片。下一条观察可以带一张。</p><button class="outline-button" type="button" data-addgallerydemo>看看五个月相册示例</button></section>';
-  const knowledgeFields=[['environment','实际环境'],['habits','已知习性'],['issues','常见问题'],['effectiveCare','有效经验'],['hypotheses','待验证假设']];const filledKnowledge=knowledgeFields.filter(([key])=>p.knowledge?.[key]);
-  const knowledgeHistory=p.knowledgeHistory||[];const sectionLabel=Object.fromEntries(knowledgeFields.map(([key,label])=>[key,label]));const statusLabel=status=>status==='verified'?'已验证经验':status==='unverified'?'尚未验证':'手动修订';
-  const knowledgeHtml=`<section class="knowledge-section"><div class="subsection-head"><div><h4>专属养护档案</h4></div><button class="outline-button" type="button" data-editknowledge>编辑档案</button></div>${filledKnowledge.length?`<dl>${filledKnowledge.map(([key,label])=>`<div><dt>${label}</dt><dd>${esc(p.knowledge[key])}</dd></div>`).join('')}</dl>`:'<p class="muted">把反复观察后仍然有用的经验整理在这里，可以随时修订。</p>'}${knowledgeHistory.length?`<details class="knowledge-revisions"><summary>导入与修订记录 ${knowledgeHistory.length} 条</summary>${knowledgeHistory.slice().reverse().map(item=>`<article><div><b>${esc(sectionLabel[item.section]||item.section)}</b><span class="knowledge-status ${item.status==='verified'?'verified':'unverified'}">${statusLabel(item.status)}</span></div><p>${esc(item.incomingText)}</p><small>${esc(item.sourceDate||item.batchDate||'日期未标明')} · ${esc(sourceText(item.source))} · ${esc(item.actionLabel||item.action)}</small></article>`).join('')}</details>`:''}${legacyKnowledge.length?`<details class="legacy-knowledge"><summary>旧版知识记录 ${legacyKnowledge.length} 条</summary>${legacyKnowledge.map(e=>`<p>✦ ${esc(e.text)} <small>${esc(e.date||e.dateLabel)}</small></p>`).join('')}</details>`:''}</section>`;
-  const posts=allEntries.length?allEntries.map(e=>{const measurements=[e.environment?.lightLux!=null&&`${e.environment.lightLux} lux`,e.environment?.temperatureC!=null&&`${e.environment.temperatureC} °C`,e.environment?.humidityPct!=null&&`${e.environment.humidityPct}% RH`].filter(Boolean);return `<article class="journal-post"><header class="post-head"><time>${esc(e.date?dateText(e.date):e.dateLabel||'日期未定')}</time><span class="entry-type ${esc(e.kind)}">${esc(labels[e.kind])}</span><span class="post-actions"><button type="button" data-editentry="${esc(e.id)}">修改</button><button type="button" data-deleteentry="${esc(e.id)}">删除</button></span></header>${e.photoDataUrl?`<img class="post-photo" src="${esc(e.photoDataUrl)}" alt="${esc(p.name)}的成长照片" loading="lazy">`:''}<div class="post-caption"><p>${esc(e.text)}</p>${measurements.length?`<div class="measurement-row">${measurements.map(x=>`<span>${esc(x)}</span>`).join('')}</div>`:''}<details><summary>记录依据</summary><div class="entry-source">${esc(sourceText(e.source))}${e.source?.quote?' · 原句：'+esc(e.source.quote):''}${e.source?.note?' · '+esc(e.source.note):''}</div></details></div></article>`}).join(''):'<div class="empty-feed"><b>还没有成长观察。</b><span>拍一张照片，或写下今天看见的变化。</span><button class="primary-button" type="button" data-newpost>记录第一条观察</button></div>';
-  $('journalContent').innerHTML=`<section class="plant-profile"><span class="plant-avatar">${latestPhoto?`<img src="${esc(latestPhoto)}" alt="${esc(p.name)}最近的照片">`:`<canvas data-portrait="${esc(p.id)}" aria-hidden="true"></canvas>`}</span><div class="profile-main"><h3>${esc(p.name)}</h3><p>${esc([p.species,p.location||'还没有记录摆放位置'].filter(Boolean).join('，'))}</p><div class="profile-stats"><span><b>${allEntries.length}</b>成长记录</span><span><b>${photos.length}</b>照片</span><span><b>${observations}</b>观察事实</span></div></div></section>${knowledgeHtml}${photoHtml}<div class="feed-title"><h4>成长日记</h4><small>只记录植物发生了什么</small></div><div class="journal-feed">${posts}</div>`;
+  const photoOptions=selectedId=>photos.map(e=>`<option value="${esc(e.id)}" ${e.id===selectedId?'selected':''}>${esc(e.date||e.dateLabel)}，${esc(e.text.slice(0,24))}</option>`).join('');
+  const demoPhotos=photos.length&&photos.every(e=>e.source?.kind==='demo');
+  const photoHtml=photos.length?`<section class="album-section"><div class="subsection-head"><div><h4>成长图版</h4><p>${demoPhotos?'演示照片，按记录日期排列':'真实照片，按拍摄日期排列'}</p></div><span>${photos.length} 张照片</span></div><div class="album-strip">${photos.map((e,k)=>`<figure><img src="${esc(e.photoDataUrl)}" alt="${esc(p.name)} ${esc(e.date||e.dateLabel)}"><figcaption><span>图 ${k+1}</span>${esc(e.date||e.dateLabel)}</figcaption></figure>`).join('')}</div>${photos.length>=2?`<div class="compare-picker"><label>较早<select id="comparePhotoA">${photoOptions(photos[0].id)}</select></label><label>较晚<select id="comparePhotoB">${photoOptions(photos.at(-1).id)}</select></label><button class="outline-button" type="button" data-comparephotos>对比照片</button></div><div id="selectedPhotoCompare" class="photo-compare">${compareSliderHtml(photos[0],photos.at(-1))}</div>`:''}</section>`:'<section class="album-section empty-album"><h4>成长图版</h4><p>还没有照片。下一条观察可以带一张。</p><button class="outline-button" type="button" data-addgallerydemo>看看五个月相册示例</button></section>';
+  const knowledgeFields=[['environment','实际环境'],['habits','已知习性'],['issues','常见问题'],['effectiveCare','有效经验'],['hypotheses','待验证假设']];
+  const filledKnowledge=knowledgeFields.filter(([key])=>p.knowledge?.[key]);const knowledgeHistory=p.knowledgeHistory||[];
+  const sectionLabel=Object.fromEntries(knowledgeFields);
+  const statusLabel=status=>status==='verified'?'已验证经验':status==='unverified'?'尚未验证':'手动修订';
+  const knowledgeHtml=`<section class="knowledge-section"><div class="subsection-head"><div><h4>专属养护档案</h4><p>反复观察后留下的结论；“待验证假设”一栏仍是猜想</p></div><button class="outline-button" type="button" data-editknowledge>编辑档案</button></div>${filledKnowledge.length?`<dl>${filledKnowledge.map(([key,label])=>`<div class="${key==='hypotheses'?'is-hypothesis':'is-conclusion'}"><dt>${label}</dt><dd>${esc(p.knowledge[key])}</dd></div>`).join('')}</dl>`:'<p class="muted">把反复观察后仍然有用的经验整理在这里，可以随时修订。</p>'}${knowledgeHistory.length?`<details class="knowledge-revisions"><summary>导入与修订记录 ${knowledgeHistory.length} 条</summary>${knowledgeHistory.slice().reverse().map(item=>`<article><div><b>${esc(sectionLabel[item.section]||item.section)}</b><span class="knowledge-status ${item.status==='verified'?'verified':'unverified'}">${statusLabel(item.status)}</span></div><p>${esc(item.incomingText)}</p><small>${esc(item.sourceDate||item.batchDate||'日期未标明')}，${esc(sourceText(item.source))}，${esc(item.actionLabel||item.action)}</small></article>`).join('')}</details>`:''}${legacyKnowledge.length?`<details class="legacy-knowledge"><summary>旧版知识记录 ${legacyKnowledge.length} 条</summary>${legacyKnowledge.map(e=>`<p>${esc(e.text)} <small>${esc(e.date||e.dateLabel)}</small></p>`).join('')}</details>`:''}</section>`;
+  const KIND_NOTE={observation:'观察事实',hypothesis:'猜想，待验证',plan:'待观察问题'};
+  const posts=allEntries.length?allEntries.map(e=>{const measurements=[e.environment?.lightLux!=null&&`${e.environment.lightLux} lux`,e.environment?.temperatureC!=null&&`${e.environment.temperatureC} °C`,e.environment?.humidityPct!=null&&`${e.environment.humidityPct}% RH`].filter(Boolean);const [y,m,d]=(e.date||'').split('-');
+    return `<article class="journal-post kind-${esc(e.kind)}"><aside class="post-margin">${e.date?`<span class="post-day">${Number(d)}</span><span class="post-month">${Number(m)}月，${y}</span>`:`<span class="post-month">${esc(e.dateLabel||'日期未定')}</span>`}</aside><div class="post-body"><header class="post-head"><span class="entry-type ${esc(e.kind)}">${esc(KIND_NOTE[e.kind]||labels[e.kind])}</span><span class="post-actions"><button type="button" data-editentry="${esc(e.id)}">修改</button><button type="button" data-deleteentry="${esc(e.id)}">删除</button></span></header>${e.photoDataUrl?`<img class="post-photo" src="${esc(e.photoDataUrl)}" alt="${esc(p.name)}的成长照片" loading="lazy">`:''}<div class="post-caption"><p>${esc(e.text)}</p>${measurements.length?`<div class="measurement-row">${measurements.map(x=>`<span>${esc(x)}</span>`).join('')}</div>`:''}<details><summary>记录依据</summary><div class="entry-source">${esc(sourceText(e.source))}${e.source?.quote?'，原句：'+esc(e.source.quote):''}${e.source?.note?'，'+esc(e.source.note):''}</div></details></div></div></article>`}).join(''):'<div class="empty-feed"><b>还没有成长观察。</b><span>拍一张照片，或写下今天看见的变化。</span><button class="primary-button" type="button" data-newpost>记录第一条观察</button></div>';
+  $('journalContent').innerHTML=`<header class="chapter-head"><div class="chapter-plate-wrap"><div class="chapter-plate"><canvas data-portrait="${esc(p.id)}" data-base=".93" data-fill=".84" aria-hidden="true"></canvas></div><span class="plate-caption">${p.portraitDataUrl?'上传的插画':'默认插画'}</span></div><div class="chapter-title"><span class="chapter-no">第${cnNumber(index+1)}章</span><h3>${esc(p.name)}</h3><p>${esc([p.species,p.location||'还没有记录摆放位置'].filter(Boolean).join('，'))}</p><div class="profile-stats"><span><b>${allEntries.length}</b>成长记录</span><span><b>${observations}</b>观察事实</span><span><b>${hypotheses}</b>猜想</span><span><b>${photos.length}</b>照片</span></div><button class="outline-button" type="button" data-newpost>＋ 写一条观察</button></div></header>${knowledgeHtml}${photoHtml}<div class="feed-title"><h4>成长日记</h4><small>只记录植物发生了什么；养护操作在“今日巡园”的日历里</small></div><div class="journal-feed">${posts}</div>`;
   $('plantList').querySelector(`[data-selectplant="${CSS.escape(p.id)}"]`)?.classList.add('active');mountPortraits($('plantList'));mountPortraits($('journalContent'));
 }
 function compareSliderHtml(a,b){return `<div class="compare-slider" style="--pos:50%"><img src="${esc(b.photoDataUrl)}" alt="较晚照片，${esc(b.date||b.dateLabel)}"><div class="compare-top"><img src="${esc(a.photoDataUrl)}" alt="较早照片，${esc(a.date||a.dateLabel)}"></div><span class="compare-handle" aria-hidden="true"></span><span class="compare-label left">${esc(a.date||a.dateLabel)}</span><span class="compare-label right">${esc(b.date||b.dateLabel)}</span><input class="compare-range" type="range" min="0" max="100" value="50" aria-label="拖动比较两张照片"></div>`}
-function openPlantForm(id=null){editingPlantId=id;const form=$('plantForm');form.reset();const p=plants.find(x=>x.id===id);if(p){form.elements.name.value=p.name;form.elements.species.value=p.species||'';form.elements.location.value=p.location||'';form.elements.checkEveryDays.value=p.checkEveryDays||'';form.elements.reminderCareType.value=p.reminderCareType||'water';form.elements.moistureEnabled.checked=Boolean(p.moistureEnabled)}$('plantDialogTitle').textContent=p?'修改植物档案':'欢迎一盆新植物';$('plantSaveButton').textContent=p?'保存档案':'让它入住';$('deletePlantButton').hidden=!p;show($('plantDialog'))}
+function openPlantForm(id=null){editingPlantId=id;const form=$('plantForm');form.reset();const p=plants.find(x=>x.id===id);if(p){form.elements.name.value=p.name;form.elements.species.value=p.species||'';form.elements.location.value=p.location||'';form.elements.checkEveryDays.value=p.checkEveryDays||'';form.elements.reminderCareType.value=p.reminderCareType||'water';form.elements.moistureEnabled.checked=Boolean(p.moistureEnabled);form.elements.zone.value=p.zone||'auto'}pendingPortrait=undefined;showPortraitPreview(p?.portraitDataUrl||null);$('plantDialogTitle').textContent=p?'修改植物档案':'欢迎一盆新植物';$('plantSaveButton').textContent=p?'保存档案':'让它入住';$('deletePlantButton').hidden=!p;show($('plantDialog'))}
+let pendingPortrait; // undefined = unchanged, null = removed, string = new
+function showPortraitPreview(url){$('portraitPreview').hidden=!url;$('portraitPreviewImg').src=url||'';$('portraitHint').textContent=url?'当前使用上传的插画':'未上传时使用默认插画'}
+async function portraitToDataUrl(file){if(!file)return null;if(!/^image\/(png|webp|jpeg)$/.test(file.type))throw Error('插画请选择 PNG、WebP 或 JPEG 图片');if(file.size>20*1024*1024)throw Error('插画原图超过 20 MB，请换一张');const bitmap=await createImageBitmap(file);const scale=Math.min(1,900/Math.max(bitmap.width,bitmap.height));const canvas=document.createElement('canvas');canvas.width=Math.round(bitmap.width*scale);canvas.height=Math.round(bitmap.height*scale);canvas.getContext('2d').drawImage(bitmap,0,0,canvas.width,canvas.height);bitmap.close?.();let data=canvas.toDataURL('image/webp',0.9);if(!data.startsWith('data:image/webp'))data=canvas.toDataURL('image/png');if(data.length>4*1024*1024)throw Error('插画缩小后仍然太大，请换一张');return data}
 function fillPlantSelect(){ $('entryPlant').innerHTML=plants.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('') }
 function syncEntryFields(){const isCare=$('entryType').value==='care';$('careKindRow').hidden=!isCare;$('pestDetailsRow').hidden=!isCare||$('careType').value!=='pest';$('environmentFields').hidden=isCare;$('photoRow').hidden=isCare;$('entrySaveButton').textContent=isCare?'保存养护记录':'发布到成长日记'}
 function openEntry(plantId=null,care=null,entryId=null){if(!plants.length){toast('请先让一盆植物入住');openPlantForm();return}editingEntryId=entryId;const old=entries.find(e=>e.id===entryId);const form=$('entryForm');form.reset();fillPlantSelect();form.elements.plantId.value=old?.plantId||plantId||selectedPlant||plants[0].id;form.elements.date.value=old?.date||today();form.elements.type.value=old?.kind||care?'care':'observation';if(old?.kind)form.elements.type.value=old.kind;form.elements.careType.value=old?.care||care||'water';form.elements.text.value=old?.text||(!old&&care?`今天${labels[care]}。`:'');form.elements.pestProduct.value=old?.pestDetails?.product||'';form.elements.pestArea.value=old?.pestDetails?.area||'';form.elements.pestNote.value=old?.pestDetails?.note||'';form.elements.lightLux.value=old?.environment?.lightLux??'';form.elements.temperatureC.value=old?.environment?.temperatureC??'';form.elements.humidityPct.value=old?.environment?.humidityPct??'';$('entryTitle').textContent=old?(old.kind==='care'?'修改养护记录':'修改这条手记'):care?`记录${labels[care]}`:'记录今天';syncEntryFields();show($('entryDialog'))}
@@ -767,6 +811,16 @@ function renderMoistureHistory(){const p=plants.find(p=>p.id===moistureHistoryPl
   $('moistureChart').innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(p.name)}土壤湿度趋势"><defs><linearGradient id="moistFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--dew)" stop-opacity=".38"/><stop offset="1" stop-color="var(--dew)" stop-opacity="0"/></linearGradient></defs><g class="chart-grid">${grid}</g>${waterLines}<path class="moist-area" d="${area}" fill="url(#moistFill)"/><path class="moist-line" d="${d}" pathLength="1"/><g class="moist-dots">${dots}</g><g class="chart-dates">${tickHtml}</g></svg><div class="chart-legend"><span class="legend-line">湿度读数（10 最湿）</span><span class="legend-water">浇水日期</span></div>`;
   $('moistureHistoryList').innerHTML=records.slice().reverse().map(e=>`<article class="moisture-record"><b>${e.moistureValue}<small>/10</small></b><div><strong>${esc(labels[e.moistureContext||'daily'])}</strong><small>${esc((e.observedAt||e.date).replace('T',' '))}${e.note?'，'+esc(e.note):''}</small></div><span><button type="button" data-editmoisture="${esc(e.id)}">修改</button><button type="button" data-deletemoisture="${esc(e.id)}">删除</button></span></article>`).join('')}
 function openMoistureHistory(plantId){moistureHistoryPlant=plantId;moistureRange='14';renderMoistureHistory();show($('moistureHistoryDialog'))}
+function monthDate(monthsAgo=0,daysAgo=0){const now=new Date();const targetMonth=new Date(now.getFullYear(),now.getMonth()-monthsAgo,1,12);const lastDay=new Date(targetMonth.getFullYear(),targetMonth.getMonth()+1,0).getDate();targetMonth.setDate(Math.min(now.getDate(),lastDay));targetMonth.setDate(targetMonth.getDate()-daysAgo);return `${targetMonth.getFullYear()}-${String(targetMonth.getMonth()+1).padStart(2,'0')}-${String(targetMonth.getDate()).padStart(2,'0')}`}
+function demoSource(note){return {kind:'demo',conversation:'内置散尾葵演示',quote:'给朋友看的演示版本，打开就能看到散尾葵和五条成长记录。',note:note||'合成演示资料，不代表真实植物记录或真实生长速度。'}}
+async function makeArecaDemoPhoto(stage,date){
+  try{const img=await new Promise((resolve,reject)=>{const i=new Image();i.onload=()=>resolve(i);i.onerror=reject;i.src='./assets/plant-palm.webp'});const canvas=document.createElement('canvas');canvas.width=900;canvas.height=1125;const ctx=canvas.getContext('2d');const bg=ctx.createRadialGradient(450,420,40,450,560,760);bg.addColorStop(0,stage<3?'#244660':'#294b66');bg.addColorStop(.62,'#162f46');bg.addColorStop(1,'#0d2032');ctx.fillStyle=bg;ctx.fillRect(0,0,900,1125);ctx.fillStyle='rgba(205,166,96,.08)';ctx.beginPath();ctx.ellipse(450,1010,300,58,0,0,Math.PI*2);ctx.fill();const stageScale=.74+stage*.055;const h=850*stageScale;const w=h*img.width/img.height;ctx.save();ctx.shadowColor='rgba(0,0,0,.42)';ctx.shadowBlur=30;ctx.drawImage(img,450-w/2,1010-h,w,h);ctx.restore();return canvas.toDataURL('image/jpeg',.86)}catch{return makeArecaDemoPhotoDrawn(stage,date)}}
+function makeArecaDemoPhotoDrawn(stage,date){const canvas=document.createElement('canvas');canvas.width=900;canvas.height=1125;const ctx=canvas.getContext('2d');const bg=ctx.createRadialGradient(450,420,40,450,560,760);bg.addColorStop(0,'#294b66');bg.addColorStop(.62,'#162f46');bg.addColorStop(1,'#0d2032');ctx.fillStyle=bg;ctx.fillRect(0,0,900,1125);ctx.save();ctx.translate(450,980);const growth=.74+stage*.065;ctx.fillStyle='#16364e';ctx.beginPath();ctx.ellipse(0,0,118,72,0,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#c39a54';ctx.lineWidth=8;ctx.stroke();for(let k=0;k<12+stage*2;k++){const a=-1.33+k/(11+stage*2)*2.66;const len=(360+(k%4)*45)*growth;ctx.strokeStyle=k%3?'#638151':'#81965a';ctx.lineWidth=13;ctx.beginPath();ctx.moveTo(0,-42);ctx.quadraticCurveTo(Math.sin(a)*len*.45,-len*.5,Math.sin(a)*len,-Math.cos(a)*len);ctx.stroke();for(let j=2;j<8;j++){const t=j/8;const x=Math.sin(a)*len*t,y=-42+(-Math.cos(a)*len+42)*t;ctx.lineWidth=7;for(const side of [-1,1]){ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+side*(54+stage*4)*(1-t*.35),y-32);ctx.stroke()}}}ctx.restore();return canvas.toDataURL('image/jpeg',.86)}
+async function seedStarterDemoIfEmpty(){const key='starterDemoV1';const [existingPlants,existingEntries,existingMeta]=await Promise.all([all('plants'),all('entries'),all('meta')]);if(existingMeta.some(item=>item.key===key))return;if(existingPlants.length||existingEntries.length){await put('meta',{key,version:1,seeded:false,checkedAt:new Date().toISOString()});return}
+  const plantId='demo-areca-v1';const plant={id:plantId,name:'散尾葵',species:'散尾葵 / Dypsis lutescens',location:'城堡温室 · 左侧窗台（演示）',checkEveryDays:7,reminderCareType:'water',moistureEnabled:false,zone:'sill',knowledge:{environment:'明亮散射光，远离正午直晒；演示环境约 22–26 °C。',habits:'喜欢温暖与较高空气湿度，新叶会从株丛中央缓慢抽出。',issues:'叶尖发褐时，先排查空气过干、积盐与忽干忽湿。',effectiveCare:'演示建议：盆土表层变干后再浇透，保持通风，不让盆底长期积水。',hypotheses:'这是一份界面演示档案；正式使用时请用自己的观察逐条替换。'},knowledgeHistory:[],createdAt:new Date().toISOString()};
+  const observationTexts=['入住温室的第一张基准照。株丛还比较疏，先记录叶片的整体轮廓。','第二个月，从株丛中央看见一支颜色更浅的新叶，先不调整位置。','新叶逐渐展开，左侧叶片也舒展了一些；继续观察光线是否均匀。','第四次记录时冠幅更饱满，叶尖状态稳定，没有看见明显黄化。','今天把它和第一张图并排比较：株形更舒展，也更接近窗边散射光的方向。'];const observationDates=[4,3,2,1,0].map(months=>monthDate(months));const records=[];for(let i=0;i<observationTexts.length;i++)records.push({id:`${plantId}-observation-${i+1}`,plantId,kind:'observation',care:null,date:observationDates[i],dateLabel:null,text:observationTexts[i],source:demoSource(),photoDataUrl:await makeArecaDemoPhoto(i,observationDates[i]),environment:{lightLux:[4200,4600,5100,4900,5300][i],temperatureC:[23,24,25,24,24][i],humidityPct:[55,57,60,58,61][i]},createdAt:new Date().toISOString()});
+  for(const [id,care,date,text] of [['water','water',monthDate(0,2),'演示记录：盆土表层变干后浇透。'],['mist','mist',monthDate(0,1),'演示记录：早晨轻喷叶面周围，提高局部湿度。'],['fertilize','fertilize',monthDate(0,18),'演示记录：生长期使用一次低浓度观叶植物肥。']])records.push({id:`${plantId}-care-${id}`,plantId,kind:'care',care,date,dateLabel:null,text,source:demoSource(),photoDataUrl:null,environment:null,createdAt:new Date().toISOString()});
+  await saveMany([plant],records);await put('meta',{key,version:1,seeded:true,seededAt:new Date().toISOString(),plantId,observationCount:5})}
 async function makeGalleryDemoPhoto(stage,date){
   // painted growth stages (Nano Banana 2.1); under file:// the canvas can't be exported, so fall back to drawing
   try{const img=await new Promise((resolve,reject)=>{const i=new Image();i.onload=()=>resolve(i);i.onerror=reject;i.src=`./assets/album-${stage+1}.webp`});
@@ -804,11 +858,13 @@ async function restoreBackup(mode){if(!backupDraft)return;if(mode==='replace'){i
     const merged=mergeBackupData(plants,entries,metaRecords,backupDraft,newId);await saveMany(merged.plants,merged.entries);for(const item of merged.meta)await put('meta',item)
   }backupDraft=null;await refresh();close($('backupDialog'));toast('备份已恢复到这台设备')}
 const promptText=`请把最近 1–2 周我们讨论植物的内容整理成「小猫植物园」可导入记录。请输出一个 JSON 对象；放在 json 代码框里也可以。允许一次包含多盆植物。格式为 {"format":"xiaomao-chat-import","version":1,"plants":[{"name":"植物名","species":"可选","location":"可选","checkEveryDays":7,"reminderCareType":"water","moistureEnabled":true}],"entries":[{"plant":"植物名","kind":"care|moisture|observation|hypothesis|plan|knowledge","care":"water|mist|fertilize|pest 或 null","date":"YYYY-MM-DD 或 null","dateLabel":"仅当日期不精确时填写原文时间","observedAt":"湿度读数的 YYYY-MM-DDTHH:mm 或 null","moistureValue":"湿度记录时填写 1–10 整数","moistureContext":"daily|before_water|after_water","knowledgeSection":"knowledge 时填写 environment|habits|issues|effectiveCare|hypotheses","knowledgeStatus":"knowledge 时填写 verified|unverified","text":"简短中文记录","source":{"kind":"user_quote|assistant_recap|demo","conversation":"聊天标题","quote":"支持这条记录的原句","note":"不确定性说明"}}]}。可以只整理植物基本资料或养护知识，不强制附带成长日记。严格区分：care 是明确已经完成的养护；moisture 是明确说出的 1–10 土壤湿度读数；observation 是亲眼看见或测量的植物变化；hypothesis 是解释性猜想；plan 是将来要观察的问题或动作；knowledge 是准备收入专属养护档案的信息。knowledge 必须选择栏目并标明已验证或尚未验证；不能把推测标成 verified。同一句同时包含浇水、湿度和观察时拆成独立记录。疑问、计划和示例不能写成事实；助手转述标 assistant_recap。不要编造日期或时间；没有精确日期的已完成养护不要写成 care。每条保留支持它的用户原句。`;
+function setupModeSwitch(){applyPhase();document.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{setMode(b.dataset.mode);applyPhase()});setInterval(applyPhase,60*1000)}
 function setupScene(){const canvas=$('gardenScene');if(!canvas||typeof ResizeObserver==='undefined')return;const label=$('sceneLabel');
   scene=new GardenScene(canvas,{onPlantClick:id=>{selectedPlant=id;setTab('journal');renderJournal();document.querySelector('.main-tabs').scrollIntoView({behavior:'smooth',block:'start'})},
     onHover:hit=>{if(!hit||hit.cat){label.hidden=true;canvas.title=hit?.cat==='sleep'?'小猫睡着了':hit?.cat?'小猫':'';return}const p=plants.find(x=>x.id===hit.id);if(!p)return;const st=checkStatus(p,entries,today());label.innerHTML=`<strong>${esc(p.name)}</strong><span>${st.check?'可以检查一下了':'状态很好'}，点开看手记</span>`;label.style.left=`${hit.cx}px`;label.style.top=`${hit.y0}px`;label.hidden=false}});
+  if(new URLSearchParams(location.search).has('debug'))window.__scene=scene;
   setInterval(()=>{renderHero()},5*60*1000)}
-async function init(){try{await openDb();requestPersistentStorage();setupScene();const journalMatch=location.hash.match(/^#journal(?:\/(.+))?/);if(journalMatch?.[1])selectedPlant=decodeURIComponent(journalMatch[1]);await refresh()}catch(err){document.querySelector('main').innerHTML=`<div class="empty-state"><b>本地资料库暂时打不开</b>${esc(err.message)}。请用正常浏览模式，并通过本地服务或 HTTPS 打开。</div>`;return}
+async function init(){try{await openDb();await seedStarterDemoIfEmpty();requestPersistentStorage();setupScene();setupModeSwitch();const journalMatch=location.hash.match(/^#journal(?:\/(.+))?/);if(journalMatch?.[1])selectedPlant=decodeURIComponent(journalMatch[1]);await refresh()}catch(err){document.querySelector('main').innerHTML=`<div class="empty-state"><b>本地资料库暂时打不开</b>${esc(err.message)}。请用正常浏览模式，并通过本地服务或 HTTPS 打开。</div>`;return}
   setTab(location.hash.startsWith('#journal')?'journal':'care');$('tabCare').onclick=()=>setTab('care');$('tabJournal').onclick=()=>setTab('journal');$('heroAction').onclick=()=>{setTab('journal');openEntry()};$('heroRound').onclick=()=>{if(!plants.length){openPlantForm();return}setTab('care');document.querySelector('.main-tabs').scrollIntoView({behavior:'smooth',block:'start'})};$('toolsButton').onclick=()=>show($('toolsDialog'));$('addPlantCare').onclick=()=>openPlantForm();$('addEntry').onclick=()=>openEntry();document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>close(b.closest('dialog')));
   $('toggleCareHistory').onclick=()=>{$('careHistory').hidden=!$('careHistory').hidden;$('toggleCareHistory').textContent=$('careHistory').hidden?'查看养护日历':'收起养护日历';if(!$('careHistory').hidden)$('careHistory').scrollIntoView({behavior:'smooth',block:'start'})};
   const changeMonth=delta=>{const [y,m]=careMonth.split('-').map(Number);const d=new Date(y,m-1+delta,1);careMonth=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;selectedCareDay=null;renderCareHistory()};$('prevCareMonth').onclick=()=>changeMonth(-1);$('nextCareMonth').onclick=()=>changeMonth(1);$('carePlantFilter').onchange=()=>renderCareHistory();$('careTypeFilter').onchange=()=>renderCareHistory();$('calendarViewButton').onclick=()=>{careView='calendar';renderCareHistory()};$('listViewButton').onclick=()=>{careView='list';renderCareHistory()};
@@ -818,8 +874,10 @@ async function init(){try{await openDb();requestPersistentStorage();setupScene()
     const editEntry=e.target.closest('[data-editentry]');if(editEntry){const old=entries.find(x=>x.id===editEntry.dataset.editentry);if(old)openEntry(old.plantId,null,old.id);return}
     const b=e.target.closest('[data-deleteentry]');if(!b)return;if(!confirm('删除这条成长记录？建议先导出备份。'))return;try{await remove('entries',b.dataset.deleteentry);await refresh();toast('成长记录已删除')}catch(err){toast(err.message)}};
   $('journalContent').oninput=e=>{if(e.target.classList.contains('compare-range'))e.target.closest('.compare-slider').style.setProperty('--pos',`${e.target.value}%`)};
+  $('plantForm').elements.portrait.onchange=async e=>{try{pendingPortrait=await portraitToDataUrl(e.target.files[0]);showPortraitPreview(pendingPortrait)}catch(err){e.target.value='';toast(err.message)}};
+  $('removePortrait').onclick=()=>{pendingPortrait=null;$('plantForm').elements.portrait.value='';showPortraitPreview(null)};
   $('entryType').onchange=syncEntryFields;$('careType').onchange=syncEntryFields;
-  $('plantForm').onsubmit=async e=>{e.preventDefault();try{const f=e.target;const old=plants.find(x=>x.id===editingPlantId);const p={...old,id:old?.id||newId(),name:f.elements.name.value.trim(),species:f.elements.species.value.trim(),location:f.elements.location.value.trim(),checkEveryDays:f.elements.checkEveryDays.value?Number(f.elements.checkEveryDays.value):null,reminderCareType:f.elements.reminderCareType.value||'water',moistureEnabled:f.elements.moistureEnabled.checked,createdAt:old?.createdAt||new Date().toISOString()};validatePlant(p);if(plants.some(x=>x.id!==p.id&&normalize(x.name)===normalize(p.name)))throw Error('这盆植物已经在园里了');await put('plants',p);selectedPlant=p.id;await refresh();f.reset();close($('plantDialog'));toast(old?'植物档案已更新':`${p.name} 入住啦`);editingPlantId=null}catch(err){toast(err.message)}};
+  $('plantForm').onsubmit=async e=>{e.preventDefault();try{const f=e.target;const old=plants.find(x=>x.id===editingPlantId);const p={...old,id:old?.id||newId(),name:f.elements.name.value.trim(),species:f.elements.species.value.trim(),location:f.elements.location.value.trim(),checkEveryDays:f.elements.checkEveryDays.value?Number(f.elements.checkEveryDays.value):null,reminderCareType:f.elements.reminderCareType.value||'water',moistureEnabled:f.elements.moistureEnabled.checked,zone:f.elements.zone.value||'auto',portraitDataUrl:pendingPortrait===undefined?(old?.portraitDataUrl||null):pendingPortrait,createdAt:old?.createdAt||new Date().toISOString()};validatePlant(p);if(plants.some(x=>x.id!==p.id&&normalize(x.name)===normalize(p.name)))throw Error('这盆植物已经在园里了');await put('plants',p);selectedPlant=p.id;await refresh();f.reset();close($('plantDialog'));toast(old?'植物档案已更新':`${p.name} 入住了温室`);editingPlantId=null}catch(err){toast(err.message)}};
   $('deletePlantButton').onclick=async()=>{const p=plants.find(x=>x.id===editingPlantId);if(!p)return;if(!confirm(`删除「${p.name}」以及它的全部手记和照片？删除后只能通过备份恢复。`))return;try{await removePlantAndEntries(p.id);editingPlantId=null;selectedPlant=null;await refresh();close($('plantDialog'));toast(`${p.name} 已从植物园移除`)}catch(err){toast(err.message)}};
   $('entryForm').onsubmit=async e=>{e.preventDefault();try{const f=e.target;const old=entries.find(x=>x.id===editingEntryId);const isCare=f.elements.type.value==='care';const numberOrNull=name=>f.elements[name].value===''?null:Number(f.elements[name].value);const photo=await photoToDataUrl(f.elements.photo.files[0]);const entry={...old,id:old?.id||newId(),plantId:f.elements.plantId.value,date:f.elements.date.value,dateLabel:null,kind:f.elements.type.value,care:isCare?f.elements.careType.value:null,text:f.elements.text.value.trim(),source:old?.source||{kind:'manual'},photoDataUrl:photo||old?.photoDataUrl||null,createdAt:old?.createdAt||new Date().toISOString(),pestDetails:isCare&&f.elements.careType.value==='pest'?{product:f.elements.pestProduct.value.trim(),area:f.elements.pestArea.value.trim(),note:f.elements.pestNote.value.trim()}:null,environment:!isCare?{lightLux:numberOrNull('lightLux'),temperatureC:numberOrNull('temperatureC'),humidityPct:numberOrNull('humidityPct')}:null};validateEntry({...entry,plant:plants.find(p=>p.id===entry.plantId)?.name});await put('entries',entry);selectedPlant=entry.plantId;editingEntryId=null;await refresh();close($('entryDialog'));if(isCare){setTab('care');toast(old?'养护记录已更新':'今天的照顾已记下');if(!old&&entry.date===today())celebrate(entry.plantId,entry.care)}else{setTab('journal');toast(old?'这条手记已更新':'成长观察已放进它的主页')}}catch(err){toast(err.message)}};
   $('moistureScale').onclick=e=>{const button=e.target.closest('[data-moisture-value]');if(button)setMoistureValue(button.dataset.moistureValue)};
